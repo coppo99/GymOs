@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import type { ExerciseFormData, BodyPart, ExerciseType } from '../types';
-import { getDefaultLoadIncrement, getDefaultMuscleGroup } from '../engine/progression';
+import type { ExerciseFormData } from '../types';
 
 interface Props {
   initialData?: Partial<ExerciseFormData>;
@@ -8,12 +7,6 @@ interface Props {
   onCancel: () => void;
   title?: string;
 }
-
-const BODY_PART_OPTIONS: { value: BodyPart; label: string }[] = [
-  { value: 'upper', label: '💪 Upper body' },
-  { value: 'lower', label: '🦵 Lower body' },
-  { value: 'core',  label: '🔥 Core' },
-];
 
 const MUSCLE_GROUP_SUGGESTIONS = [
   'Petto',
@@ -27,14 +20,12 @@ const MUSCLE_GROUP_SUGGESTIONS = [
 export default function ExerciseForm({ initialData, onSave, onCancel, title = 'Nuovo Esercizio' }: Props) {
   const [data, setData] = useState<ExerciseFormData>({
     name: initialData?.name ?? '',
-    bodyPart: initialData?.bodyPart ?? 'upper',
-    muscleGroup: initialData?.muscleGroup ?? getDefaultMuscleGroup(initialData?.bodyPart ?? 'upper'),
-    type: initialData?.type ?? 'compound',
+    muscleGroup: initialData?.muscleGroup ?? 'Petto',
     targetSets: initialData?.targetSets ?? 3,
     repsMin: initialData?.repsMin ?? 6,
-    repsMax: initialData?.repsMax ?? 10,
+    repsMax: initialData?.repsMax ?? 15,
     currentLoad: initialData?.currentLoad ?? 20,
-    loadIncrement: initialData?.loadIncrement ?? getDefaultLoadIncrement(initialData?.bodyPart ?? 'upper'),
+    loadIncrement: initialData?.loadIncrement ?? 2.5,
     rirTarget: initialData?.rirTarget ?? 2,
   });
 
@@ -45,18 +36,7 @@ export default function ExerciseForm({ initialData, onSave, onCancel, title = 'N
   const [errors, setErrors] = useState<Partial<Record<keyof ExerciseFormData, string>>>({});
 
   function set<K extends keyof ExerciseFormData>(key: K, value: ExerciseFormData[K]) {
-    setData((prev) => {
-      const next = { ...prev, [key]: value };
-      if (key === 'bodyPart') {
-        if (prev.loadIncrement === getDefaultLoadIncrement(prev.bodyPart)) {
-          next.loadIncrement = getDefaultLoadIncrement(value as string);
-        }
-        if (!customMuscleGroup) {
-          next.muscleGroup = getDefaultMuscleGroup(value as string);
-        }
-      }
-      return next;
-    });
+    setData((prev) => ({ ...prev, [key]: value }));
     setErrors((e) => ({ ...e, [key]: undefined }));
   }
 
@@ -104,43 +84,6 @@ export default function ExerciseForm({ initialData, onSave, onCancel, title = 'N
             {errors.name && <span style={{ color: 'var(--danger)', fontSize: 'var(--fs-xs)' }}>{errors.name}</span>}
           </div>
 
-          {/* Exercise Importance Type */}
-          <div className="form-group">
-            <label className="form-label">Tipologia Esercizio</label>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-2)' }}>
-              <button
-                type="button"
-                className={`btn btn-sm ${data.type === 'compound' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => set('type', 'compound')}
-                style={{ fontSize: 'var(--fs-sm)' }}
-              >
-                🏋️ Principale (Compound)
-              </button>
-              <button
-                type="button"
-                className={`btn btn-sm ${data.type === 'accessory' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => set('type', 'accessory')}
-                style={{ fontSize: 'var(--fs-sm)' }}
-              >
-                💪 Accessorio (Isolamento)
-              </button>
-            </div>
-          </div>
-
-          {/* Body Part */}
-          <div className="form-group">
-            <label className="form-label">Distretto Corporeo</label>
-            <select
-              className="form-input"
-              value={data.bodyPart}
-              onChange={(e) => set('bodyPart', e.target.value as BodyPart)}
-            >
-              {BODY_PART_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
-
           {/* Muscle Group */}
           <div className="form-group">
             <div className="flex justify-between items-center">
@@ -152,7 +95,7 @@ export default function ExerciseForm({ initialData, onSave, onCancel, title = 'N
                 onClick={() => {
                   setCustomMuscleGroup(!customMuscleGroup);
                   if (customMuscleGroup) {
-                    set('muscleGroup', getDefaultMuscleGroup(data.bodyPart));
+                    set('muscleGroup', 'Petto');
                   } else {
                     set('muscleGroup', '');
                   }

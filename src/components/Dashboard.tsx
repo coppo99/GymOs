@@ -19,6 +19,13 @@ import {
   roundToIncrement,
   evaluateSession,
   calculateVolumeLoad,
+  calculateEffectiveVolume,
+  getVolumeStatus,
+  getDeloadTargetSets,
+  adjustLoadForNextSet,
+  DEFAULT_MEV,
+  DEFAULT_MRV,
+  validateSetValues,
 } from '../engine/progression';
 import ExerciseForm from './ExerciseForm';
 
@@ -47,40 +54,64 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
 }
 
-function VolumeBarChart({ weeklyTrend }: { weeklyTrend: { weekStart: string; volume: number; setCount: number }[] }) {
-  const maxVol = Math.max(...weeklyTrend.map(w => w.volume), 0) || 1;
+function VolumeBarChart({ weeklyTrend, mev, mrv }: { weeklyTrend: { weekStart: string; volume: number; effectiveVolume: number; setCount: number }[]; mev: number; mrv: number }) {
+  const maxVol = Math.max(...weeklyTrend.map(w => w.effectiveVolume), 0) || 1;
   const height = 80;
   const width = 280;
+
+  // threshold bar positions (as percentage of max)
+  const mevPct = (mev * 50) / maxVol * 100; // rough est: 50kg*reps per set
+  const mrvPct = (mrv * 50) / maxVol * 100;
+  const optimalLinePct = (20 * 50) / maxVol * 100;
 
   return (
     <div style={{ marginTop: 'var(--space-3)', background: 'var(--bg-elevated)', borderRadius: 'var(--radius)', padding: 'var(--space-3)' }}>
       <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '6px' }}>
-        Trend Volume Ultimi 30 Giorni (kg * reps)
+        Volume Effettivo Ultimi 30 Giorni (RIR-pesato)
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-around', height: height, paddingTop: '10px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-around', height: height, paddingTop: '10px', position: 'relative' }}>
         {weeklyTrend.map((w, idx) => {
-          const barHeight = w.volume > 0 ? (w.volume / maxVol) * (height - 25) : 4;
+          const barHeight = w.effectiveVolume > 0 ? (w.effectiveVolume / maxVol) * (height - 25) : 4;
+          const rawHeight = w.volume > 0 ? (w.volume / maxVol) * (height - 25) : 0;
           const date = new Date(w.weekStart + 'T00:00:00');
           const dateLabel = date.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
 
           return (
             <div key={idx} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
-              {w.volume > 0 && (
+              {w.effectiveVolume > 0 && (
                 <span style={{ fontSize: '9px', fontWeight: 'bold', color: 'var(--text-primary)', marginBottom: '2px' }}>
-                  {w.volume.toFixed(0)}
+                  {w.effectiveVolume.toFixed(0)}
                 </span>
               )}
-              <div
-                style={{
-                  width: '28px',
-                  height: `${barHeight}px`,
-                  background: 'linear-gradient(to top, var(--accent) 30%, var(--accent-hover) 100%)',
-                  borderRadius: '3px 3px 0 0',
-                  boxShadow: '0 2px 8px var(--accent-glow)',
-                  transition: 'height 0.4s ease',
-                }}
-              />
+              <div style={{ position: 'relative', width: '100%', display: 'flex', justifyContent: 'center' }}>
+                {/* Raw volume bar (lighter, behind) */}
+                {rawHeight > 0 && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      width: '28px',
+                      height: `${rawHeight}px`,
+                      background: 'rgba(124,107,255,0.15)',
+                      borderRadius: '3px 3px 0 0',
+                      bottom: 0,
+                    }}
+                  />
+                )}
+                {/* Effective volume bar */}
+                <div
+                  style={{
+                    width: '16px',
+                    height: `${barHeight}px`,
+                    background: 'linear-gradient(to top, var(--accent) 30%, var(--accent-hover) 100%)',
+                    borderRadius: '3px 3px 0 0',
+                    boxShadow: '0 2px 8px var(--accent-glow)',
+                    transition: 'height 0.4s ease',
+                    position: 'relative',
+                    zIndex: 1,
+                  }}
+                />
+              </div>
               <span style={{ fontSize: '8px', color: 'var(--text-muted)', marginTop: '4px', textAlign: 'center' }}>
                 {dateLabel}
               </span>
@@ -113,7 +144,7 @@ function InlineSetLogger({
 }: InlineLoggerProps) {
   const isDeloadPhase = mesoState?.phase === 'deload';
   const targetSets = isDeloadPhase
-    ? Math.max(1, Math.round(exercise.targetSets * 0.6))
+    ? getDeloadTargetSets(exercise.targetSets)
     : exercise.targetSets;
 
   const baseSuggestedLoad = getNextSessionLoad(exercise, lastSession);
@@ -156,6 +187,12 @@ function InlineSetLogger({
 
     if (!reps || !load || reps < 1 || load < 0) return;
 
+    const warnings = validateSetValues(reps, load, rir);
+    const warningMessages = [warnings.reps, warnings.load, warnings.rir]
+      .filter(Boolean)
+      .join('\n');
+    if (warningMessages && !confirm(warningMessages + '\n\nProcedere comunque?')) return;
+
     const newSet: SetLog = {
       setNumber: loggedSets.length + 1,
       reps,
@@ -165,20 +202,14 @@ function InlineSetLogger({
     const updated = [...loggedSets, newSet];
     setLoggedSets(updated);
 
-    // RIR Autoregulation
+    // RIR Autoregulation via progression engine
     let nextLoad = load;
     let feedback: string | null = null;
 
     if (rir !== null && exercise.rirTarget !== null) {
-      if (rir < exercise.rirTarget - 1) {
-        const reductionPct = rir === 0 ? 0.10 : 0.05;
-        nextLoad = roundToIncrement(load * (1 - reductionPct), exercise.loadIncrement);
-        nextLoad = Math.max(nextLoad, exercise.loadIncrement);
-        feedback = `RIR ${rir} < target ${exercise.rirTarget}. Carico serie succ. ridotto a ${nextLoad} kg.`;
-      } else if (rir > exercise.rirTarget + 1) {
-        nextLoad = roundToIncrement(load * 1.05, exercise.loadIncrement);
-        feedback = `RIR ${rir} > target ${exercise.rirTarget}. Carico serie succ. aumentato a ${nextLoad} kg.`;
-      }
+      const adjustment = adjustLoadForNextSet(load, rir, exercise.rirTarget, exercise.loadIncrement);
+      nextLoad = adjustment.suggestedLoad;
+      feedback = adjustment.feedback;
     }
 
     setIntraSessionFeedback(feedback);
@@ -583,11 +614,7 @@ export default function Dashboard({
     }
   }
 
-  const sortedExercises = [...exercises].sort((a, b) => {
-    if (a.type === 'compound' && b.type === 'accessory') return -1;
-    if (a.type === 'accessory' && b.type === 'compound') return 1;
-    return a.order - b.order;
-  });
+  const sortedExercises = [...exercises].sort((a, b) => a.order - b.order);
 
   const today = new Date().toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
 
@@ -628,13 +655,19 @@ export default function Dashboard({
 
               const meso = getMesocycleState(activeGroup);
               const weeklyTrend = getWeeklyVolumeTrend(sessions, exercises, activeGroup, 4);
-              const currentWeekVol = weeklyTrend[3]?.volume ?? 0;
-              const prevWeekVol = weeklyTrend[2]?.volume ?? 0;
+              const currentWeekEffVol = weeklyTrend[3]?.effectiveVolume ?? 0;
+              const currentWeekRawVol = weeklyTrend[3]?.volume ?? 0;
+              const prevWeekEffVol = weeklyTrend[2]?.effectiveVolume ?? 0;
+              const currentWeekSetCount = weeklyTrend[3]?.setCount ?? 0;
 
               let deltaPct = 0;
-              if (prevWeekVol > 0) {
-                deltaPct = ((currentWeekVol - prevWeekVol) / prevWeekVol) * 100;
+              if (prevWeekEffVol > 0) {
+                deltaPct = ((currentWeekEffVol - prevWeekEffVol) / prevWeekEffVol) * 100;
               }
+
+              const volStatus = meso ? getVolumeStatus(currentWeekSetCount, meso.mev, meso.mrv) : 'low';
+              const volStatusColors: Record<string, string> = { low: 'var(--warning)', optimal: 'var(--success)', caution: 'var(--warning)', overreaching: 'var(--danger)' };
+              const volStatusLabels: Record<string, string> = { low: 'Sotto MEV', optimal: 'Ottimale', caution: 'Oltre range ottimale', overreaching: 'Sopra MRV' };
 
               const overloadWarning = checkEarlyOverloadWarning(exercises, sessions, activeGroup);
 
@@ -662,12 +695,19 @@ export default function Dashboard({
 
                   <div className="flex justify-between items-center" style={{ background: 'var(--bg-elevated)', padding: 'var(--space-3)', borderRadius: 'var(--radius)', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}>
                     <div>
-                      <div className="fs-xs text-muted">Volume Settimanale Corrente</div>
+                      <div className="fs-xs text-muted">Volume Effettivo Settimanale</div>
                       <div className="fw-bold fs-md" style={{ color: 'var(--accent)' }}>
-                        {currentWeekVol.toFixed(0)} <span className="fs-xs text-muted">kg*reps</span>
+                        {currentWeekEffVol.toFixed(0)} <span className="fs-xs text-muted">kg*reps</span>
                       </div>
+                      {meso && (
+                        <div style={{ marginTop: '2px' }}>
+                          <span style={{ fontSize: '10px', color: volStatusColors[volStatus], fontWeight: 600 }}>
+                            {volStatusLabels[volStatus]} ({currentWeekSetCount} serie)
+                          </span>
+                        </div>
+                      )}
                     </div>
-                    {prevWeekVol > 0 && (
+                    {prevWeekEffVol > 0 && (
                       <div style={{ textAlign: 'right' }}>
                         <div className="fs-xs text-muted">vs Settimana Scorsa</div>
                         <div className={`fw-bold fs-sm ${deltaPct >= 0 ? 'text-success' : 'text-danger'}`}>
@@ -677,7 +717,7 @@ export default function Dashboard({
                     )}
                   </div>
 
-                  <VolumeBarChart weeklyTrend={weeklyTrend} />
+                  <VolumeBarChart weeklyTrend={weeklyTrend} mev={meso?.mev ?? DEFAULT_MEV} mrv={meso?.mrv ?? DEFAULT_MRV} />
 
                   {overloadWarning.warning && (
                     <div className="suggestion-banner danger" style={{ marginTop: 'var(--space-3)', padding: '8px var(--space-3)', borderRadius: 'var(--radius-sm)' }}>
@@ -719,25 +759,14 @@ export default function Dashboard({
             const plateauReport = detectPlateau(ex, sessions);
             const rirOverestimated = checkRirReliability(ex, sessions);
 
-            const isCompound = ex.type === 'compound';
-
             return (
               <div
                 key={ex.id}
                 className="card"
                 style={{
                   cursor: 'default',
-                  border: isLogging
-                    ? '1px solid var(--accent)'
-                    : isCompound
-                      ? '1px solid rgba(124, 107, 255, 0.25)'
-                      : '1px solid var(--border)',
-                  borderLeft: isCompound
-                    ? '4px solid var(--accent)'
-                    : '1px solid var(--border)',
-                  opacity: !isCompound && !isExpanded ? 0.85 : 1,
-                  padding: isCompound ? 'var(--space-5)' : 'var(--space-4)',
-                  boxShadow: isCompound && !isExpanded ? '0 4px 12px rgba(124, 107, 255, 0.04)' : 'none',
+                  border: isLogging ? '1px solid var(--accent)' : '1px solid var(--border)',
+                  padding: 'var(--space-5)',
                 }}
               >
                 {/* Main Clickable Row */}
@@ -751,20 +780,8 @@ export default function Dashboard({
                   }}
                 >
                   <div className="exercise-card-body">
-                    <div
-                      className="exercise-card-name"
-                      style={{
-                        fontWeight: isCompound ? '700' : '600',
-                        fontSize: isCompound ? 'var(--fs-md)' : 'var(--fs-base)',
-                        letterSpacing: isCompound ? '-0.3px' : 'none',
-                      }}
-                    >
+                    <div className="exercise-card-name">
                       {ex.name}
-                      {isCompound && (
-                        <span className="text-accent" style={{ fontSize: '10px', marginLeft: '6px', fontWeight: '500', verticalAlign: 'middle', background: 'var(--accent-glow)', padding: '2px 6px', borderRadius: '100px', border: '1px solid rgba(124,107,255,0.2)' }}>
-                          ★ Principale
-                        </span>
-                      )}
                     </div>
                     <div className="exercise-card-meta" style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap', alignItems: 'center', marginTop: 4 }}>
                       <span className="badge badge-neutral" style={{ fontSize: '10px' }}>{ex.muscleGroup}</span>
@@ -791,7 +808,7 @@ export default function Dashboard({
 
                 {/* Badges indicators when collapsed */}
                 {(plateauReport.isPlateau || rirOverestimated) && !isExpanded && (
-                  <div className="flex gap-2" style={{ marginTop: '8px', paddingLeft: isCompound ? '2px' : '0' }}>
+                  <div className="flex gap-2" style={{ marginTop: '8px' }}>
                     {plateauReport.isPlateau && (
                       <span className="badge badge-danger" style={{ fontSize: '10px', padding: '2px 6px' }}>
                         ⚠️ Plateau rilevato

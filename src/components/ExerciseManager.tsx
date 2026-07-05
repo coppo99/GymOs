@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { Exercise, ExerciseFormData } from '../types';
 import ExerciseForm from './ExerciseForm';
-import { getDefaultLoadIncrement } from '../engine/progression';
 
 interface Props {
   exercises: Exercise[];
@@ -9,12 +8,6 @@ interface Props {
   onUpdate: (id: string, data: Partial<ExerciseFormData>) => void;
   onDelete: (id: string) => void;
 }
-
-const BODY_PART_LABELS: Record<string, string> = {
-  upper: '💪 Upper',
-  lower: '🦵 Lower',
-  core: '🔥 Core',
-};
 
 export default function ExerciseManager({ exercises, onAdd, onUpdate, onDelete }: Props) {
   const [showForm, setShowForm] = useState(false);
@@ -62,7 +55,6 @@ export default function ExerciseManager({ exercises, onAdd, onUpdate, onDelete }
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 600, marginBottom: 'var(--space-1)' }}>{ex.name}</div>
                   <div className="flex gap-2 items-center" style={{ flexWrap: 'wrap' }}>
-                    <span className="badge badge-neutral">{BODY_PART_LABELS[ex.bodyPart]}</span>
                     <span className="fs-xs text-muted">
                       {ex.targetSets} × {ex.repsMin}–{ex.repsMax} reps
                     </span>

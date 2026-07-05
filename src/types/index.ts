@@ -1,25 +1,19 @@
 // ─── Core Domain Types ───────────────────────────────────────────────────────
 
-export type BodyPart = 'upper' | 'lower' | 'core';
-
 export type ProgressionResult = 'increase' | 'maintain' | 'deload';
-
-export type ExerciseType = 'compound' | 'accessory';
 
 export interface Exercise {
   id: string;
   name: string;
-  bodyPart: BodyPart;
-  muscleGroup: string;    // e.g. "Petto", "Dorso", "Gambe", "Spalle", "Braccia", "Core"
-  type: ExerciseType;     // 'compound' (multi-joint/main) or 'accessory' (isolation/secondary)
+  muscleGroup: string;
   targetSets: number;
-  repsMin: number;        // lower bound of rep range (e.g. 6)
-  repsMax: number;        // upper bound of rep range (e.g. 10)
-  currentLoad: number;    // kg
-  loadIncrement: number;  // kg per session
-  rirTarget: number | null; // target RIR, null = not tracked
-  createdAt: string;      // ISO date
-  order: number;          // display order
+  repsMin: number;
+  repsMax: number;
+  currentLoad: number;
+  loadIncrement: number;
+  rirTarget: number | null;
+  createdAt: string;
+  order: number;
 }
 
 export interface SetLog {
@@ -45,6 +39,7 @@ export interface WeeklyVolumeLog {
   muscleGroup: string;
   weekStartDate: string;             // ISO date of Monday (YYYY-MM-DD)
   totalVolumeLoad: number;           // sum of (reps * load) for all sets
+  effectiveVolumeLoad: number;       // RIR-weighted volume load
   setCount: number;
 }
 
@@ -53,6 +48,8 @@ export interface MesocycleState {
   currentWeek: number;               // 0-based
   mesocycleLengthWeeks: number;      // default: 5
   phase: 'accumulation' | 'deload';
+  mev: number;                       // minimum effective volume (sets/week)
+  mrv: number;                       // maximum recoverable volume (sets/week)
   lastUpdated: string;               // ISO date of last week change
 }
 
@@ -88,9 +85,7 @@ export interface ActiveSession {
 
 export interface ExerciseFormData {
   name: string;
-  bodyPart: BodyPart;
   muscleGroup: string;
-  type: ExerciseType;
   targetSets: number;
   repsMin: number;
   repsMax: number;

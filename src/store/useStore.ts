@@ -9,169 +9,25 @@ import type {
   WeeklyVolumeLog,
 } from '../types';
 import { loadState, saveState, generateId, todayIso } from '../utils/storage';
-import {
-  evaluateSession,
-  getDefaultLoadIncrement,
-  getDefaultMuscleGroup,
-  calculateVolumeLoad,
-} from '../engine/progression';
+import { evaluateSession, calculateVolumeLoad, calculateEffectiveVolume, DEFAULT_MEV, DEFAULT_MRV } from '../engine/progression';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_MESO_LENGTH = 5; // 4 weeks accumulation, 1 week deload
-
-// ─── Default Template (Push/Pull/Legs) for First-Time Experience ──────────────
-
-const DEFAULT_TEMPLATE_EXERCISES = [
-  // ─── Push Day Esercizi ───
-  {
-    name: 'Panca Piana Bilanciere',
-    bodyPart: 'upper' as const,
-    muscleGroup: 'Petto',
-    type: 'compound' as const,
-    targetSets: 3,
-    repsMin: 6,
-    repsMax: 10,
-    currentLoad: 60,
-    loadIncrement: 2.5,
-    rirTarget: 2,
-  },
-  {
-    name: 'Military Press Bilanciere',
-    bodyPart: 'upper' as const,
-    muscleGroup: 'Spalle',
-    type: 'compound' as const,
-    targetSets: 3,
-    repsMin: 6,
-    repsMax: 10,
-    currentLoad: 35,
-    loadIncrement: 2.5,
-    rirTarget: 2,
-  },
-  {
-    name: 'Alzate Laterali Manubri',
-    bodyPart: 'upper' as const,
-    muscleGroup: 'Spalle',
-    type: 'accessory' as const,
-    targetSets: 3,
-    repsMin: 10,
-    repsMax: 15,
-    currentLoad: 10,
-    loadIncrement: 1.25,
-    rirTarget: 1,
-  },
-  {
-    name: 'Pushdown Tricipiti Cavo',
-    bodyPart: 'upper' as const,
-    muscleGroup: 'Braccia',
-    type: 'accessory' as const,
-    targetSets: 3,
-    repsMin: 10,
-    repsMax: 15,
-    currentLoad: 20,
-    loadIncrement: 2.5,
-    rirTarget: 1,
-  },
-  // ─── Pull Day Esercizi ───
-  {
-    name: 'Trazioni alla Sbarra',
-    bodyPart: 'upper' as const,
-    muscleGroup: 'Dorso',
-    type: 'compound' as const,
-    targetSets: 3,
-    repsMin: 6,
-    repsMax: 10,
-    currentLoad: 0, // bodyweight default
-    loadIncrement: 2.5,
-    rirTarget: 2,
-  },
-  {
-    name: 'Pulley Basso Cavo',
-    bodyPart: 'upper' as const,
-    muscleGroup: 'Dorso',
-    type: 'accessory' as const,
-    targetSets: 3,
-    repsMin: 8,
-    repsMax: 12,
-    currentLoad: 45,
-    loadIncrement: 2.5,
-    rirTarget: 2,
-  },
-  {
-    name: 'Curl Alternato Manubri',
-    bodyPart: 'upper' as const,
-    muscleGroup: 'Braccia',
-    type: 'accessory' as const,
-    targetSets: 3,
-    repsMin: 10,
-    repsMax: 15,
-    currentLoad: 12,
-    loadIncrement: 1.25,
-    rirTarget: 1,
-  },
-  // ─── Legs Day Esercizi ───
-  {
-    name: 'Squat Bilanciere',
-    bodyPart: 'lower' as const,
-    muscleGroup: 'Gambe',
-    type: 'compound' as const,
-    targetSets: 3,
-    repsMin: 6,
-    repsMax: 10,
-    currentLoad: 70,
-    loadIncrement: 5.0,
-    rirTarget: 2,
-  },
-  {
-    name: 'Leg Curl Seduto',
-    bodyPart: 'lower' as const,
-    muscleGroup: 'Gambe',
-    type: 'accessory' as const,
-    targetSets: 3,
-    repsMin: 10,
-    repsMax: 15,
-    currentLoad: 30,
-    loadIncrement: 2.5,
-    rirTarget: 1,
-  },
-  {
-    name: 'Calf Raise In Piedi',
-    bodyPart: 'lower' as const,
-    muscleGroup: 'Gambe',
-    type: 'accessory' as const,
-    targetSets: 3,
-    repsMin: 12,
-    repsMax: 15,
-    currentLoad: 40,
-    loadIncrement: 2.5,
-    rirTarget: 1,
-  },
-];
 
 // ─── Helpers for Migration & Initialization ──────────────────────────────────
 
 function initializeMissingStates(state: AppState): AppState {
   let modified = false;
 
-  // 1. Ensure all exercises have a muscleGroup and type
+  // 1. Ensure all exercises have a muscleGroup (backward compat)
   let exercises = state.exercises ? [...state.exercises] : [];
   exercises = exercises.map((ex) => {
-    let updatedEx = { ...ex };
-    let itemModified = false;
-
     if (!ex.muscleGroup) {
-      updatedEx.muscleGroup = getDefaultMuscleGroup(ex.bodyPart);
-      itemModified = true;
-    }
-    if (!ex.type) {
-      updatedEx.type = 'compound';
-      itemModified = true;
-    }
-
-    if (itemModified) {
       modified = true;
+      return { ...ex, muscleGroup: 'Altro' };
     }
-    return updatedEx;
+    return ex;
   });
 
   // Collect unique muscle groups
@@ -190,6 +46,8 @@ function initializeMissingStates(state: AppState): AppState {
         currentWeek: 0,
         mesocycleLengthWeeks: DEFAULT_MESO_LENGTH,
         phase: 'accumulation',
+        mev: DEFAULT_MEV,
+        mrv: DEFAULT_MRV,
         lastUpdated: new Date().toISOString(),
       });
     }
@@ -201,9 +59,18 @@ function initializeMissingStates(state: AppState): AppState {
     modified = true;
   }
 
-  // 4. Calendar-based Mesocycle week increment check
+  // 4. Backward compat: ensure all meso states have mev/mrv
+  const mesoWithDefaults = mesocycleStates.map((meso) => {
+    if (meso.mev === undefined || meso.mrv === undefined) {
+      modified = true;
+      return { ...meso, mev: meso.mev ?? DEFAULT_MEV, mrv: meso.mrv ?? DEFAULT_MRV };
+    }
+    return meso;
+  });
+
+  // 5. Calendar-based Mesocycle week increment check
   const now = new Date();
-  const updatedMesoStates = mesocycleStates.map((meso) => {
+  const updatedMesoStates = mesoWithDefaults.map((meso) => {
     const lastUpdate = new Date(meso.lastUpdated);
     const msDiff = now.getTime() - lastUpdate.getTime();
     const daysDiff = msDiff / (1000 * 60 * 60 * 24);
@@ -275,14 +142,12 @@ function useStore() {
         const exercise: Exercise = {
           id: generateId(),
           name: data.name.trim(),
-          bodyPart: data.bodyPart,
-          muscleGroup: data.muscleGroup.trim() || getDefaultMuscleGroup(data.bodyPart),
-          type: data.type || 'compound',
+          muscleGroup: data.muscleGroup.trim() || 'Altro',
           targetSets: data.targetSets,
           repsMin: data.repsMin,
           repsMax: data.repsMax,
           currentLoad: data.currentLoad,
-          loadIncrement: data.loadIncrement || getDefaultLoadIncrement(data.bodyPart),
+          loadIncrement: data.loadIncrement,
           rirTarget: data.rirTarget,
           createdAt: new Date().toISOString(),
           order: prev.exercises.length,
@@ -298,6 +163,8 @@ function useStore() {
             currentWeek: 0,
             mesocycleLengthWeeks: DEFAULT_MESO_LENGTH,
             phase: 'accumulation',
+            mev: DEFAULT_MEV,
+            mrv: DEFAULT_MRV,
             lastUpdated: new Date().toISOString(),
           });
         }
@@ -346,6 +213,8 @@ function useStore() {
               currentWeek: 0,
               mesocycleLengthWeeks: DEFAULT_MESO_LENGTH,
               phase: 'accumulation',
+              mev: DEFAULT_MEV,
+              mrv: DEFAULT_MRV,
               lastUpdated: new Date().toISOString(),
             });
           }
@@ -410,6 +279,7 @@ function useStore() {
         const evaluation = evaluateSession(exercise, sets, exerciseSessions, mesoState);
 
         const sessionVolume = calculateVolumeLoad(sets);
+        const effectiveVolume = calculateEffectiveVolume(sets);
 
         const session: SessionLog = {
           id: generateId(),
@@ -437,6 +307,7 @@ function useStore() {
           nextWeeklyVolumes[matchIdx] = {
             ...nextWeeklyVolumes[matchIdx],
             totalVolumeLoad: nextWeeklyVolumes[matchIdx].totalVolumeLoad + sessionVolume,
+            effectiveVolumeLoad: (nextWeeklyVolumes[matchIdx].effectiveVolumeLoad ?? 0) + effectiveVolume,
             setCount: nextWeeklyVolumes[matchIdx].setCount + sets.length,
           };
         } else {
@@ -444,6 +315,7 @@ function useStore() {
             muscleGroup: exercise.muscleGroup,
             weekStartDate: mondayStr,
             totalVolumeLoad: sessionVolume,
+            effectiveVolumeLoad: effectiveVolume,
             setCount: sets.length,
           });
         }

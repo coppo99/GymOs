@@ -78,10 +78,11 @@ export function evaluateSession(
       roundToIncrement(currentLoad * 0.9, loadIncrement),
       loadIncrement
     );
+    const deloadSets = Math.max(1, Math.round(targetSets * 0.6));
     return {
       result: 'deload',
       suggestedLoad: deloadLoad,
-      reason: `Fase deload programmata per ${exercise.muscleGroup} — carico ridotto del 10% a ${deloadLoad} kg.`,
+      reason: `Fase deload programmata per ${exercise.muscleGroup} — carico ridotto del 10% a ${deloadLoad} kg, serie target ridotte a ${deloadSets}.`,
     };
   }
 
@@ -164,15 +165,65 @@ export function evaluateSession(
 
 // ─── Volume Helpers ──────────────────────────────────────────────────────────
 
+// Default volume thresholds per muscle group (Schoenfeld 2017, Baz-Valle 2022)
+export const DEFAULT_MEV = 6;   // minimum effective volume (sets/week)
+export const DEFAULT_MRV = 25;  // maximum recoverable volume (sets/week)
+export const OPTIMAL_MIN = 10;  // optimal range lower bound
+export const OPTIMAL_MAX = 20;  // optimal range upper bound
+
+/**
+ * Effort factor based on RIR (Reps In Reserve).
+ * Sets farther from failure contribute less to effective volume.
+ * Based on Schoenfeld et al. 2021, Schoenfeld et al. 2016.
+ */
+export function effortFactorForRir(rir: number | null): number {
+  if (rir === null) return 0.75;
+  if (rir <= 1) return 1.0;
+  if (rir <= 3) return 0.85;
+  return 0.6;
+}
+
+/**
+ * Calculates the RIR-weighted effective volume load of a set collection.
+ * Effective volume = sum(reps * load * effort_factor) across all sets.
+ * This replaces raw volume for progression tracking.
+ */
+export function calculateEffectiveVolume(sets: SetLog[]): number {
+  return sets.reduce((sum, set) => {
+    const raw = set.reps * set.load;
+    const factor = effortFactorForRir(set.rir);
+    return sum + raw * factor;
+  }, 0);
+}
+
+/**
+ * Evaluates weekly set volume against MEV/MRV thresholds.
+ * Returns the volume status for display and advisory logic.
+ */
+export type VolumeStatus = 'low' | 'optimal' | 'caution' | 'overreaching';
+
+export function getVolumeStatus(
+  weeklySetCount: number,
+  mev: number,
+  mrv: number
+): VolumeStatus {
+  if (weeklySetCount < mev) return 'low';
+  if (weeklySetCount >= OPTIMAL_MIN && weeklySetCount <= OPTIMAL_MAX) return 'optimal';
+  if (weeklySetCount > mrv) return 'overreaching';
+  if (weeklySetCount > OPTIMAL_MAX) return 'caution';
+  return 'low'; // between MEV and OPTIMAL_MIN
+}
+
 /**
  * Calculates the volume load of a set: reps * load
+ * (kept for raw display, use calculateEffectiveVolume for tracking)
  */
 export function calculateVolumeLoad(sets: SetLog[]): number {
   return sets.reduce((sum, set) => sum + set.reps * set.load, 0);
 }
 
 /**
- * Returns rolling 7-day volume load for a muscle group.
+ * Returns rolling 7-day effective volume load for a muscle group.
  * Reference date defaults to today.
  */
 export function getRolling7DayVolume(
@@ -180,7 +231,7 @@ export function getRolling7DayVolume(
   exercises: Exercise[],
   muscleGroup: string,
   referenceDateStr: string = new Date().toISOString().slice(0, 10)
-): { totalVolume: number; setCount: number } {
+): { totalVolume: number; effectiveVolume: number; setCount: number } {
   const groupExerciseIds = new Set(
     exercises.filter((ex) => ex.muscleGroup.toLowerCase() === muscleGroup.toLowerCase()).map((ex) => ex.id)
   );
@@ -189,6 +240,7 @@ export function getRolling7DayVolume(
   const sevenDaysAgo = new Date(refDate.getTime() - 7 * 24 * 60 * 60 * 1000);
 
   let totalVolume = 0;
+  let effectiveVolume = 0;
   let setCount = 0;
 
   sessions.forEach((session) => {
@@ -197,23 +249,24 @@ export function getRolling7DayVolume(
     const sessionDate = new Date(session.date);
     if (sessionDate >= sevenDaysAgo && sessionDate <= refDate) {
       totalVolume += calculateVolumeLoad(session.sets);
+      effectiveVolume += calculateEffectiveVolume(session.sets);
       setCount += session.sets.length;
     }
   });
 
-  return { totalVolume, setCount };
+  return { totalVolume, effectiveVolume, setCount };
 }
 
 /**
- * Generates historical weekly volume trend blocks going back N weeks.
+ * Generates historical weekly effective volume trend blocks going back N weeks.
  */
 export function getWeeklyVolumeTrend(
   sessions: SessionLog[],
   exercises: Exercise[],
   muscleGroup: string,
   numWeeks: number = 4
-): { weekStart: string; volume: number; setCount: number }[] {
-  const trend: { weekStart: string; volume: number; setCount: number }[] = [];
+): { weekStart: string; volume: number; effectiveVolume: number; setCount: number }[] {
+  const trend: { weekStart: string; volume: number; effectiveVolume: number; setCount: number }[] = [];
   const groupExerciseIds = new Set(
     exercises.filter((ex) => ex.muscleGroup.toLowerCase() === muscleGroup.toLowerCase()).map((ex) => ex.id)
   );
@@ -230,19 +283,21 @@ export function getWeeklyVolumeTrend(
     const weekEnd = new Date(weekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
     const weekStartStr = weekStart.toISOString().slice(0, 10);
 
-    let volume = 0;
+    let rawVolume = 0;
+    let effVolume = 0;
     let sets = 0;
 
     sessions.forEach((s) => {
       if (!groupExerciseIds.has(s.exerciseId)) return;
       const sDate = new Date(s.date);
       if (sDate >= weekStart && sDate < weekEnd) {
-        volume += calculateVolumeLoad(s.sets);
+        rawVolume += calculateVolumeLoad(s.sets);
+        effVolume += calculateEffectiveVolume(s.sets);
         sets += s.sets.length;
       }
     });
 
-    trend.push({ weekStart: weekStartStr, volume, setCount: sets });
+    trend.push({ weekStart: weekStartStr, volume: rawVolume, effectiveVolume: effVolume, setCount: sets });
   }
 
   return trend.reverse(); // return oldest to newest
@@ -391,14 +446,147 @@ export function getProgressionLabel(result: ProgressionResult): string {
   }
 }
 
-export function getDefaultLoadIncrement(bodyPart: string): number {
-  return bodyPart === 'lower' ? 5.0 : 2.5;
+// ─── Deload ──────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the multiplier for target sets during a deload week.
+ * ~40% reduction from peak volume (0.6x).
+ */
+export function getDeloadSetMultiplier(): number {
+  return 0.6;
 }
 
-export function getDefaultMuscleGroup(bodyPart: string): string {
-  switch (bodyPart) {
-    case 'lower': return 'Gambe';
-    case 'core': return 'Core';
-    default: return 'Upper Body';
+/**
+ * Calculates the reduced target sets for a deload week.
+ *
+ * Formula:   result = floorAt1( clamp( round(n · 0.6), to 40‑50% reduction ) )
+ *
+ * The 40‑50% reduction range is [ceil(n·0.5), floor(n·0.6)].
+ * When a valid integer exists in that range, the rounded value is clamped to it.
+ * Otherwise (empty range) the closest integer to 40% reduction is used via round.
+ *
+ * Low-input behaviour (n = 1‑6):
+ *
+ *   n  │ raw=n·0.6 │ range[50%..40%]  │ round │ clamp │ out │ reduction
+ *   ───┼───────────┼──────────────────┼───────┼───────┼─────┼──────────
+ *   1  │ 0.6       │ [1, 0] invalid   │ ❍     │ ❍     │  1  │  0%  (floor guard)
+ *   2  │ 1.2       │ [1, 1] valid     │ 1     │ 1     │  1  │ 50%
+ *   3  │ 1.8       │ [2, 1] invalid   │ 2     │ ❍     │  2  │ 33%* (see below)
+ *   4  │ 2.4       │ [2, 2] valid     │ 2     │ 2     │  2  │ 50%
+ *   5  │ 3.0       │ [3, 3] valid     │ 3     │ 3     │  3  │ 40%
+ *   6  │ 3.6       │ [3, 3] valid     │ 4     │ 3     │  3  │ 50%
+ *
+ *   * n=3: no integer exists in [1.5, 1.8], so 40‑50% is impossible.
+ *     round, floor, ceil all produce results outside the range (33% or 67%).
+ *     This is a fundamental integer constraint, not a rounding choice issue.
+ */
+export function getDeloadTargetSets(normalTargetSets: number): number {
+  const raw = normalTargetSets * getDeloadSetMultiplier(); // 60% of original (40% reduction)
+  const minAcceptable = Math.ceil(normalTargetSets * 0.5); // 50% reduction
+  const maxAcceptable = Math.floor(raw);                   // 40% reduction
+
+  let result: number;
+  if (minAcceptable <= maxAcceptable) {
+    // Valid integer range exists → clamp rounded value within range
+    result = Math.max(minAcceptable, Math.min(maxAcceptable, Math.round(raw)));
+  } else {
+    // No integer falls in 40–50% range → use closest to 40%
+    result = Math.round(raw);
   }
+
+  return Math.max(1, result);
 }
+
+// ─── Intra-Session Load Adjustment (RIR-based) ──────────────────────────────
+
+/**
+ * Adjusts the load for the next set within the same session
+ * based on the absolute RIR deviation (|diff|) from target.
+ *
+ * - |diff| >= 3 → adjust by ±10%
+ * - |diff| = 2  → adjust by ±5%
+ * - |diff| <= 1 → no change
+ * - Adjustment is symmetric: same |diff| gives same magnitude
+ * - Output is always ≥ loadIncrement
+ */
+export function adjustLoadForNextSet(
+  lastSetLoad: number,
+  actualRir: number,
+  rirTarget: number,
+  loadIncrement: number
+): { suggestedLoad: number; feedback: string | null } {
+  const diff = actualRir - rirTarget;
+  const absDiff = Math.abs(diff);
+
+  if (absDiff >= 3) {
+    const factor = diff > 0 ? 1.10 : 0.90;
+    const suggestedLoad = Math.max(
+      roundToIncrement(lastSetLoad * factor, loadIncrement),
+      loadIncrement
+    );
+    const direction = diff > 0 ? 'aumentato' : 'ridotto';
+    return {
+      suggestedLoad,
+      feedback: `RIR ${actualRir} vs target ${rirTarget}. Carico serie succ. ${direction} a ${suggestedLoad} kg.`,
+    };
+  }
+  if (absDiff === 2) {
+    const factor = diff > 0 ? 1.05 : 0.95;
+    const suggestedLoad = Math.max(
+      roundToIncrement(lastSetLoad * factor, loadIncrement),
+      loadIncrement
+    );
+    const direction = diff > 0 ? 'aumentato' : 'ridotto';
+    return {
+      suggestedLoad,
+      feedback: `RIR ${actualRir} vs target ${rirTarget}. Carico serie succ. ${direction} a ${suggestedLoad} kg.`,
+    };
+  }
+  return { suggestedLoad: lastSetLoad, feedback: null };
+}
+
+// ─── Set Validation ──────────────────────────────────────────────────────────
+
+export interface SetValidationWarnings {
+  reps?: string;
+  load?: string;
+  rir?: string;
+}
+
+/**
+ * Checks a set's values against reasonable ranges.
+ * Returns warnings for anomalous values — the caller can confirm before proceeding.
+ * PR-level values are never blocked, only flagged for confirmation.
+ */
+export function validateSetValues(
+  reps: number,
+  load: number,
+  rir: number | null
+): SetValidationWarnings {
+  const warnings: SetValidationWarnings = {};
+
+  if (reps < 3 && reps >= 1) {
+    warnings.reps = `${reps} reps: valore molto basso. Sei sicuro?`;
+  }
+  if (reps > 25) {
+    warnings.reps = `${reps} reps: valore molto alto (range tipico 3–25). Sei sicuro?`;
+  }
+
+  if (load > 0 && load < 1) {
+    warnings.load = `${load} kg: carico molto basso. Confermi?`;
+  }
+  if (load > 300) {
+    warnings.load = `${load} kg: carico eccezionale. Se è un PR procedi pure.`;
+  }
+
+  if (rir !== null && rir > 5) {
+    warnings.rir = `RIR ${rir}: molto lontano dal cedimento. Confermi?`;
+  }
+  if (rir !== null && rir < 0) {
+    warnings.rir = `RIR negativo non valido.`;
+  }
+
+  return warnings;
+}
+
+
