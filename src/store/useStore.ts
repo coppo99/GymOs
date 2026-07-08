@@ -10,6 +10,7 @@ import type {
 } from '../types';
 import { loadState, saveState, generateId, todayIso } from '../utils/storage';
 import { evaluateSession, calculateVolumeLoad, calculateEffectiveVolume, DEFAULT_MEV, DEFAULT_MRV } from '../engine/progression';
+import type { CsvImportResult } from '../utils/csv';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -406,6 +407,21 @@ function useStore() {
     [update]
   );
 
+  // ─── Bulk import ────────────────────────────────────────────────────────────
+
+  const importState = useCallback(
+    (data: CsvImportResult) => {
+      update(() => ({
+        exercises: data.exercises,
+        sessions: data.sessions,
+        mesocycleStates: data.mesocycleStates,
+        weeklyVolumes: data.weeklyVolumes,
+        lastUpdated: new Date().toISOString(),
+      }));
+    },
+    [update]
+  );
+
   return {
     exercises: state.exercises,
     sessions: state.sessions,
@@ -419,6 +435,7 @@ function useStore() {
     getSessionsForExercise,
     getMesocycleState,
     forceWeekIncrement,
+    importState,
   };
 }
 

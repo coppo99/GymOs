@@ -82,6 +82,7 @@ export default function App() {
             onUpdateExercise={store.updateExercise}
             onDeleteExercise={store.deleteExercise}
             onSaveSession={store.saveSessionDirect}
+            importState={store.importState}
           />
         )}
         {activeView === 'next-workout' && (

@@ -28,6 +28,8 @@ import {
   validateSetValues,
 } from '../engine/progression';
 import ExerciseForm from './ExerciseForm';
+import { exportToCsv, downloadCsv, importFromCsv } from '../utils/csv';
+import type { CsvImportResult } from '../utils/csv';
 
 interface Props {
   exercises: Exercise[];
@@ -42,6 +44,7 @@ interface Props {
   onUpdateExercise: (id: string, data: Partial<ExerciseFormData>) => void;
   onDeleteExercise: (id: string) => void;
   onSaveSession: (exerciseId: string, sets: SetLog[]) => void;
+  importState: (data: CsvImportResult) => void;
 }
 
 function formatDate(iso: string): string {
@@ -582,12 +585,15 @@ export default function Dashboard({
   onUpdateExercise,
   onDeleteExercise,
   onSaveSession,
+  importState,
 }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [editingExercise, setEditingExercise] = useState<Exercise | null>(null);
   const [activeLoggingId, setActiveLoggingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedMesoTab, setSelectedMesoTab] = useState<string | null>(null);
+  const [importFeedback, setImportFeedback] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const uniqueMuscleGroups = Array.from(new Set(exercises.map((e) => e.muscleGroup)));
 
@@ -612,6 +618,37 @@ export default function Dashboard({
     if (confirm('Eliminare questo esercizio e tutti i dati storici?')) {
       onDeleteExercise(id);
     }
+  }
+
+  function handleExport() {
+    const csv = exportToCsv({
+      exercises,
+      sessions,
+      mesocycleStates,
+      weeklyVolumes,
+      lastUpdated: new Date().toISOString(),
+    });
+    downloadCsv(csv);
+  }
+
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result as string;
+      const result = importFromCsv(text);
+      if (result.exercises.length === 0 && result.errors.length > 0) {
+        setImportFeedback(`Errore: ${result.errors[0]}`);
+        return;
+      }
+      const msg = `Importati: ${result.exercises.length} esercizi, ${result.sessions.length} sessioni, ${result.mesocycleStates.length} stati mesociclo, ${result.weeklyVolumes.length} volumi settimanali.`;
+      if (!confirm(`Sostituire tutti i dati attuali con quelli importati?\n\n${msg}`)) return;
+      importState(result);
+      setImportFeedback(`✅ Dati importati con successo. ${msg}`);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   }
 
   const sortedExercises = [...exercises].sort((a, b) => a.order - b.order);
@@ -933,6 +970,31 @@ export default function Dashboard({
           +
         </button>
       )}
+
+      {/* Import / Export */}
+      <div className="section-title">Gestione Dati</div>
+      <div className="card" style={{ padding: 'var(--space-4)' }}>
+        <div className="flex gap-2">
+          <button className="btn btn-outline btn-sm" style={{ flex: 1 }} onClick={handleExport}>
+            📥 Esporta CSV
+          </button>
+          <button className="btn btn-outline btn-sm" style={{ flex: 1 }} onClick={() => fileInputRef.current?.click()}>
+            📤 Importa CSV
+          </button>
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv"
+          style={{ display: 'none' }}
+          onChange={handleImportFile}
+        />
+        {importFeedback && (
+          <div style={{ marginTop: 'var(--space-3)', fontSize: 'var(--fs-sm)', color: importFeedback.startsWith('✅') ? 'var(--success)' : 'var(--danger)' }}>
+            {importFeedback}
+          </div>
+        )}
+      </div>
 
       {/* Exercise Form Modal */}
       {showForm && (
