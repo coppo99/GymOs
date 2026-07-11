@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import type {
   Exercise,
   SessionLog,
@@ -11,25 +11,21 @@ import {
   getNextSessionLoad,
   getProgressionColor,
   getProgressionLabel,
-  getRolling7DayVolume,
   getWeeklyVolumeTrend,
   detectPlateau,
   checkEarlyOverloadWarning,
   checkRirReliability,
-  roundToIncrement,
-  evaluateSession,
-  calculateVolumeLoad,
-  calculateEffectiveVolume,
   getVolumeStatus,
-  getDeloadTargetSets,
-  adjustLoadForNextSet,
+  calculateVolumeLoad,
   DEFAULT_MEV,
   DEFAULT_MRV,
-  validateSetValues,
 } from '../engine/progression';
 import ExerciseForm from './ExerciseForm';
+import VolumeBarChart from './VolumeBarChart';
+import InlineSetLogger from './InlineSetLogger';
 import { exportToCsv, downloadCsv, importFromCsv } from '../utils/csv';
 import type { CsvImportResult } from '../utils/csv';
+import { buildDailySummary, drawDailySummaryToBlob } from '../utils/dailySummaryImage';
 
 interface Props {
   exercises: Exercise[];
@@ -57,519 +53,6 @@ function formatDate(iso: string): string {
   return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
 }
 
-function VolumeBarChart({ weeklyTrend, mev, mrv }: { weeklyTrend: { weekStart: string; volume: number; effectiveVolume: number; setCount: number }[]; mev: number; mrv: number }) {
-  const maxVol = Math.max(...weeklyTrend.map(w => w.effectiveVolume), 0) || 1;
-  const height = 80;
-  const width = 280;
-
-  // threshold bar positions (as percentage of max)
-  const mevPct = (mev * 50) / maxVol * 100; // rough est: 50kg*reps per set
-  const mrvPct = (mrv * 50) / maxVol * 100;
-  const optimalLinePct = (20 * 50) / maxVol * 100;
-
-  return (
-    <div style={{ marginTop: 'var(--space-3)', background: 'var(--bg-elevated)', borderRadius: 'var(--radius)', padding: 'var(--space-3)' }}>
-      <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '6px' }}>
-        Volume Effettivo Ultimi 30 Giorni (RIR-pesato)
-      </div>
-
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-around', height: height, paddingTop: '10px', position: 'relative' }}>
-        {weeklyTrend.map((w, idx) => {
-          const barHeight = w.effectiveVolume > 0 ? (w.effectiveVolume / maxVol) * (height - 25) : 4;
-          const rawHeight = w.volume > 0 ? (w.volume / maxVol) * (height - 25) : 0;
-          const date = new Date(w.weekStart + 'T00:00:00');
-          const dateLabel = date.toLocaleDateString('it-IT', { day: 'numeric', month: 'short' });
-
-          return (
-            <div key={idx} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flex: 1 }}>
-              {w.effectiveVolume > 0 && (
-                <span style={{ fontSize: '9px', fontWeight: 'bold', color: 'var(--text-primary)', marginBottom: '2px' }}>
-                  {w.effectiveVolume.toFixed(0)}
-                </span>
-              )}
-              <div style={{ position: 'relative', width: '100%', display: 'flex', justifyContent: 'center' }}>
-                {/* Raw volume bar (lighter, behind) */}
-                {rawHeight > 0 && (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      width: '28px',
-                      height: `${rawHeight}px`,
-                      background: 'rgba(124,107,255,0.15)',
-                      borderRadius: '3px 3px 0 0',
-                      bottom: 0,
-                    }}
-                  />
-                )}
-                {/* Effective volume bar */}
-                <div
-                  style={{
-                    width: '16px',
-                    height: `${barHeight}px`,
-                    background: 'linear-gradient(to top, var(--accent) 30%, var(--accent-hover) 100%)',
-                    borderRadius: '3px 3px 0 0',
-                    boxShadow: '0 2px 8px var(--accent-glow)',
-                    transition: 'height 0.4s ease',
-                    position: 'relative',
-                    zIndex: 1,
-                  }}
-                />
-              </div>
-              <span style={{ fontSize: '8px', color: 'var(--text-muted)', marginTop: '4px', textAlign: 'center' }}>
-                {dateLabel}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ─── Inline Set Logger & Celebration Component ────────────────────────────────
-
-interface InlineLoggerProps {
-  exercise: Exercise;
-  lastSession: SessionLog | undefined;
-  recentSessions: SessionLog[];
-  mesoState: MesocycleState | undefined;
-  onSaveSession: (sets: SetLog[]) => void;
-  onCancel: () => void;
-}
-
-function InlineSetLogger({
-  exercise,
-  lastSession,
-  recentSessions,
-  mesoState,
-  onSaveSession,
-  onCancel,
-}: InlineLoggerProps) {
-  const isDeloadPhase = mesoState?.phase === 'deload';
-  const targetSets = isDeloadPhase
-    ? getDeloadTargetSets(exercise.targetSets)
-    : exercise.targetSets;
-
-  const baseSuggestedLoad = getNextSessionLoad(exercise, lastSession);
-  const initialLoad = isDeloadPhase
-    ? roundToIncrement(baseSuggestedLoad * 0.9, exercise.loadIncrement)
-    : baseSuggestedLoad;
-
-  const [loggedSets, setLoggedSets] = useState<SetLog[]>([]);
-  const [repsInput, setRepsInput] = useState(String(exercise.repsMax));
-  const [loadInput, setLoadInput] = useState(String(initialLoad));
-  const [rirInput, setRirInput] = useState(exercise.rirTarget !== null ? String(exercise.rirTarget) : '');
-  const [intraSessionFeedback, setIntraSessionFeedback] = useState<string | null>(null);
-  
-  const [isFinished, setIsFinished] = useState(false);
-  const [evaluationResult, setEvaluationResult] = useState<ReturnType<typeof evaluateSession> | null>(null);
-  
-  const [showCelebration, setShowCelebration] = useState(false);
-  const [celebrationData, setCelebrationData] = useState<{
-    todayVolume: number;
-    prevVolume: number;
-    volDeltaPct: number;
-    todayMaxLoad: number;
-    prevMaxLoad: number;
-    isLoadPR: boolean;
-    isVolumePR: boolean;
-  } | null>(null);
-
-  const repsRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!showCelebration) {
-      repsRef.current?.focus();
-    }
-  }, [loggedSets.length, showCelebration]);
-
-  function handleAddSet() {
-    const reps = parseInt(repsInput, 10);
-    const load = parseFloat(loadInput);
-    const rir = rirInput !== '' ? parseInt(rirInput, 10) : null;
-
-    if (!reps || !load || reps < 1 || load < 0) return;
-
-    const warnings = validateSetValues(reps, load, rir);
-    const warningMessages = [warnings.reps, warnings.load, warnings.rir]
-      .filter(Boolean)
-      .join('\n');
-    if (warningMessages && !confirm(warningMessages + '\n\nProcedere comunque?')) return;
-
-    const newSet: SetLog = {
-      setNumber: loggedSets.length + 1,
-      reps,
-      load,
-      rir,
-    };
-    const updated = [...loggedSets, newSet];
-    setLoggedSets(updated);
-
-    // RIR Autoregulation via progression engine
-    let nextLoad = load;
-    let feedback: string | null = null;
-
-    if (rir !== null && exercise.rirTarget !== null) {
-      const adjustment = adjustLoadForNextSet(load, rir, exercise.rirTarget, exercise.loadIncrement);
-      nextLoad = adjustment.suggestedLoad;
-      feedback = adjustment.feedback;
-    }
-
-    setIntraSessionFeedback(feedback);
-
-    setRepsInput(String(reps));
-    setLoadInput(String(nextLoad));
-    setRirInput(exercise.rirTarget !== null ? String(exercise.rirTarget) : '');
-  }
-
-  function handleRemoveLast() {
-    setLoggedSets((s) => s.slice(0, -1));
-    setIntraSessionFeedback(null);
-  }
-
-  function handleEvaluate() {
-    const eval_ = evaluateSession(exercise, loggedSets, recentSessions, mesoState);
-    setEvaluationResult(eval_);
-    setIsFinished(true);
-  }
-
-  function handleConfirmSave() {
-    const todayVolume = calculateVolumeLoad(loggedSets);
-    const todayMaxLoad = Math.max(...loggedSets.map(s => s.load));
-
-    let prevVolume = 0;
-    let prevMaxLoad = 0;
-    let maxHistoricalVolume = 0;
-    let maxHistoricalLoad = 0;
-
-    if (recentSessions.length > 0) {
-      const prevSession = recentSessions[0];
-      prevVolume = calculateVolumeLoad(prevSession.sets);
-      prevMaxLoad = Math.max(...prevSession.sets.map(s => s.load));
-
-      maxHistoricalVolume = Math.max(...recentSessions.map(s => calculateVolumeLoad(s.sets)));
-      maxHistoricalLoad = Math.max(...recentSessions.flatMap(s => s.sets.map(x => x.load)));
-    }
-
-    const volDeltaPct = prevVolume > 0 ? ((todayVolume - prevVolume) / prevVolume) * 100 : 0;
-    const isLoadPR = recentSessions.length > 0 && todayMaxLoad > maxHistoricalLoad;
-    const isVolumePR = recentSessions.length > 0 && todayVolume > maxHistoricalVolume;
-
-    setCelebrationData({
-      todayVolume,
-      prevVolume,
-      volDeltaPct,
-      todayMaxLoad,
-      prevMaxLoad,
-      isLoadPR,
-      isVolumePR,
-    });
-
-    onSaveSession(loggedSets);
-    setShowCelebration(true);
-  }
-
-  // Stepper utility functions
-  const incrementReps = () => setRepsInput(prev => String(Math.max(1, (parseInt(prev, 10) || 0) + 1)));
-  const decrementReps = () => setRepsInput(prev => String(Math.max(1, (parseInt(prev, 10) || 1) - 1)));
-
-  const incrementLoad = () => setLoadInput(prev => String((parseFloat(prev) || 0) + exercise.loadIncrement));
-  const decrementLoad = () => setLoadInput(prev => String(Math.max(0, (parseFloat(prev) || 0) - exercise.loadIncrement)));
-
-  const incrementRir = () => setRirInput(prev => String(Math.min(10, (prev === '' ? 0 : parseInt(prev, 10)) + 1)));
-  const decrementRir = () => setRirInput(prev => {
-    if (prev === '') return '';
-    const val = parseInt(prev, 10) - 1;
-    return val < 0 ? '0' : String(val);
-  });
-
-  if (showCelebration && celebrationData) {
-    const {
-      todayVolume,
-      volDeltaPct,
-      todayMaxLoad,
-      prevMaxLoad,
-      isLoadPR,
-      isVolumePR,
-    } = celebrationData;
-
-    return (
-      <div style={{ marginTop: 'var(--space-3)', background: 'var(--bg-elevated)', borderRadius: 'var(--radius)', padding: 'var(--space-4)', border: '1px solid var(--success-border)', textAlign: 'center', animation: 'fadeIn 0.3s ease' }}>
-        <div style={{ fontSize: '32px', marginBottom: 'var(--space-2)' }}>🎉</div>
-        <h3 style={{ fontSize: 'var(--fs-lg)', fontWeight: '700', color: 'var(--success)', marginBottom: 'var(--space-1)' }}>
-          Sessione Completata!
-        </h3>
-        <p className="text-secondary" style={{ fontSize: 'var(--fs-sm)', marginBottom: 'var(--space-4)' }}>
-          Ottimo lavoro su {exercise.name}. Ecco i risultati di oggi:
-        </p>
-
-        {(isLoadPR || isVolumePR) && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
-            {isLoadPR && (
-              <div className="badge badge-success" style={{ padding: '6px', fontSize: '11px', justifyContent: 'center' }}>
-                🏆 NUOVO RECORD DI CARICO: {todayMaxLoad} kg!
-              </div>
-            )}
-            {isVolumePR && (
-              <div className="badge badge-accent" style={{ padding: '6px', fontSize: '11px', justifyContent: 'center' }}>
-                🔥 NUOVO RECORD DI VOLUME: {todayVolume.toFixed(0)} kg*reps!
-              </div>
-            )}
-          </div>
-        )}
-
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-5)', textAlign: 'left' }}>
-          <div style={{ background: 'var(--bg-card)', padding: 'var(--space-3)', borderRadius: 'var(--radius-sm)' }}>
-            <span className="text-muted" style={{ fontSize: '10px', textTransform: 'uppercase' }}>Volume Totale</span>
-            <div className="fw-bold fs-md" style={{ color: 'var(--accent)', marginTop: '2px' }}>
-              {todayVolume.toFixed(0)} <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>kg*reps</span>
-            </div>
-            {celebrationData.prevVolume > 0 && (
-              <span className={`fw-600 fs-xs ${volDeltaPct >= 0 ? 'text-success' : 'text-danger'}`} style={{ display: 'block', marginTop: '4px' }}>
-                {volDeltaPct >= 0 ? '▲' : '▼'} {Math.abs(volDeltaPct).toFixed(1)}% rispetto a prima
-              </span>
-            )}
-          </div>
-
-          <div style={{ background: 'var(--bg-card)', padding: 'var(--space-3)', borderRadius: 'var(--radius-sm)' }}>
-            <span className="text-muted" style={{ fontSize: '10px', textTransform: 'uppercase' }}>Carico Massimo</span>
-            <div className="fw-bold fs-md" style={{ marginTop: '2px' }}>
-              {todayMaxLoad} <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>kg</span>
-            </div>
-            {prevMaxLoad > 0 && (
-              <span className="text-muted fs-xs" style={{ display: 'block', marginTop: '4px' }}>
-                Prima: {prevMaxLoad} kg
-              </span>
-            )}
-          </div>
-        </div>
-
-        {evaluationResult && (
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: 'var(--space-3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', marginBottom: 'var(--space-4)', fontSize: 'var(--fs-xs)', textAlign: 'left' }}>
-            <div className="fw-600" style={{ color: 'var(--text-primary)', marginBottom: '2px' }}>
-              Prossimo allenamento consigliato:
-            </div>
-            <span className={`badge badge-${getProgressionColor(evaluationResult.result)}`} style={{ fontSize: '10px', marginRight: '6px' }}>
-              {getProgressionLabel(evaluationResult.result)}
-            </span>
-            <strong className="text-accent">{evaluationResult.suggestedLoad} kg</strong>
-          </div>
-        )}
-
-        <button className="btn btn-primary btn-full" onClick={onCancel}>
-          Chiudi e Continua
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ marginTop: 'var(--space-3)', background: 'var(--bg-elevated)', borderRadius: 'var(--radius)', padding: 'var(--space-3)', border: '1px solid rgba(255,255,255,0.05)' }}>
-      {isDeloadPhase && (
-        <div className="badge badge-danger mb-2 w-full" style={{ justifyContent: 'center', fontSize: '10px' }}>
-          ⚠️ Deload Attivo: target {targetSets} serie, carico consigliato -10%
-        </div>
-      )}
-
-      {/* Progress Dots */}
-      <div className="progress-dots" style={{ marginBottom: 'var(--space-3)' }}>
-        {Array.from({ length: targetSets }).map((_, i) => (
-          <div
-            key={i}
-            className={`progress-dot ${i < loggedSets.length ? 'done' : i === loggedSets.length ? 'current' : ''}`}
-          />
-        ))}
-      </div>
-
-      {/* Logged Sets list */}
-      {loggedSets.length > 0 && (
-        <div style={{ marginBottom: 'var(--space-3)' }}>
-          {loggedSets.map((s) => (
-            <div key={s.setNumber} className="logged-set" style={{ padding: '8px var(--space-3)', margin: '4px 0' }}>
-              <div className="logged-set-num" style={{ fontSize: '11px' }}>#{s.setNumber}</div>
-              <div className="logged-set-data">
-                <span className="fw-600 fs-sm">{s.reps} <span className="text-muted fs-xs">reps</span></span>
-                <span className="fw-600 fs-sm">{s.load} <span className="text-muted fs-xs">kg</span></span>
-                {s.rir !== null && <span className="fw-600 fs-sm">{s.rir} <span className="text-muted fs-xs">RIR</span></span>}
-              </div>
-              {s.setNumber === loggedSets.length && !isFinished && (
-                <button className="btn btn-ghost btn-sm" onClick={handleRemoveLast} style={{ padding: '2px 6px', minHeight: 'auto' }}>
-                  ✕
-                </button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Autoregulation feedback */}
-      {!isFinished && intraSessionFeedback && (
-        <div className="suggestion-banner warning" style={{ padding: '6px var(--space-2)', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-2)' }}>
-          <div className="suggestion-text" style={{ fontSize: '10px' }}>
-            ⚖️ {intraSessionFeedback}
-          </div>
-        </div>
-      )}
-
-      {/* Active input row with Steppers */}
-      {!isFinished && loggedSets.length < targetSets && (
-        <div style={{ background: 'var(--bg-card)', padding: 'var(--space-3)', borderRadius: 'var(--radius-sm)', display: 'flex', flexDirection: 'column', gap: 'var(--space-3)' }}>
-          <div style={{ fontSize: '11px', fontWeight: 'bold', color: 'var(--text-muted)' }}>
-            SERIE #{loggedSets.length + 1}
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: exercise.rirTarget !== null ? '1fr 1.1fr 1fr' : '1fr 1fr', gap: 'var(--space-3)' }}>
-            
-            {/* Reps Stepper */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <span style={{ fontSize: '10px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Reps</span>
-              <div style={{ display: 'flex', alignItems: 'center', width: '100%', background: 'var(--bg-input)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
-                <button 
-                  type="button" 
-                  onClick={decrementReps} 
-                  style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', color: 'var(--text-secondary)' }}
-                >
-                  -
-                </button>
-                <input
-                  ref={repsRef}
-                  className="set-input"
-                  style={{ flex: 1, border: 'none', background: 'transparent', textAlign: 'center', padding: 0, minHeight: '36px', fontWeight: '700' }}
-                  type="number"
-                  value={repsInput}
-                  onChange={(e) => setRepsInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddSet()}
-                />
-                <button 
-                  type="button" 
-                  onClick={incrementReps} 
-                  style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', color: 'var(--text-secondary)' }}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            {/* Load Stepper */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-              <span style={{ fontSize: '10px', color: 'var(--text-secondary)', marginBottom: '4px' }}>Carico (kg)</span>
-              <div style={{ display: 'flex', alignItems: 'center', width: '100%', background: 'var(--bg-input)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
-                <button 
-                  type="button" 
-                  onClick={decrementLoad} 
-                  style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', color: 'var(--text-secondary)' }}
-                >
-                  -
-                </button>
-                <input
-                  className="set-input"
-                  style={{ flex: 1, border: 'none', background: 'transparent', textAlign: 'center', padding: 0, minHeight: '36px', fontWeight: '700' }}
-                  type="number"
-                  step={0.25}
-                  value={loadInput}
-                  onChange={(e) => setLoadInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleAddSet()}
-                />
-                <button 
-                  type="button" 
-                  onClick={incrementLoad} 
-                  style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', color: 'var(--text-secondary)' }}
-                >
-                  +
-                </button>
-              </div>
-            </div>
-
-            {/* RIR Stepper (Optional) */}
-            {exercise.rirTarget !== null && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <span style={{ fontSize: '10px', color: 'var(--text-secondary)', marginBottom: '4px' }}>RIR Target</span>
-                <div style={{ display: 'flex', alignItems: 'center', width: '100%', background: 'var(--bg-input)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)' }}>
-                  <button 
-                    type="button" 
-                    onClick={decrementRir} 
-                    style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', color: 'var(--text-secondary)' }}
-                  >
-                    -
-                  </button>
-                  <input
-                    className="set-input"
-                    style={{ flex: 1, border: 'none', background: 'transparent', textAlign: 'center', padding: 0, minHeight: '36px', fontWeight: '700' }}
-                    type="number"
-                    value={rirInput}
-                    placeholder="—"
-                    onChange={(e) => setRirInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleAddSet()}
-                  />
-                  <button 
-                    type="button" 
-                    onClick={incrementRir} 
-                    style={{ width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', color: 'var(--text-secondary)' }}
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-            )}
-
-          </div>
-
-          <button
-            className="btn btn-primary btn-full"
-            onClick={handleAddSet}
-            disabled={!repsInput || !loadInput}
-            style={{ minHeight: '40px', marginTop: 'var(--space-2)' }}
-          >
-            Registra Serie #{loggedSets.length + 1}
-          </button>
-        </div>
-      )}
-
-      {/* Done notification block */}
-      {!isFinished && loggedSets.length >= targetSets && (
-        <div style={{ padding: 'var(--space-2)', background: 'var(--success-bg)', border: '1px solid var(--success-border)', borderRadius: 'var(--radius)', color: 'var(--success)', fontSize: '11px', fontWeight: 600, textAlign: 'center', marginBottom: 'var(--space-2)' }}>
-          ✓ Tutte le serie registrate!
-        </div>
-      )}
-
-      {/* Chosing results block */}
-      {isFinished && evaluationResult && (
-        <div className={`suggestion-banner ${getProgressionColor(evaluationResult.result)}`} style={{ padding: '8px var(--space-2)', borderRadius: 'var(--radius-sm)', marginBottom: 'var(--space-3)' }}>
-          <div className="suggestion-text" style={{ fontSize: 'var(--fs-xs)' }}>
-            <strong>{getProgressionLabel(evaluationResult.result)}: {evaluationResult.suggestedLoad} kg</strong>
-            <div className="text-secondary" style={{ marginTop: '2px', fontSize: '10px' }}>{evaluationResult.reason}</div>
-          </div>
-        </div>
-      )}
-
-      {/* Action buttons */}
-      <div className="flex gap-2" style={{ marginTop: 'var(--space-2)' }}>
-        {!isFinished ? (
-          <>
-            {loggedSets.length > 0 && (
-              <button className="btn btn-success btn-sm" style={{ flex: 1 }} onClick={handleEvaluate}>
-                Concludi
-              </button>
-            )}
-            <button className="btn btn-outline btn-sm" style={{ flex: 1 }} onClick={onCancel}>
-              Annulla
-            </button>
-          </>
-        ) : (
-          <>
-            <button className="btn btn-primary btn-sm" style={{ flex: 2 }} onClick={handleConfirmSave}>
-              Salva Sessione
-            </button>
-            <button className="btn btn-outline btn-sm" style={{ flex: 1 }} onClick={() => setIsFinished(false)}>
-              Indietro
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ─── Main Dashboard ──────────────────────────────────────────────────────────
 
 export default function Dashboard({
@@ -593,6 +76,7 @@ export default function Dashboard({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedMesoTab, setSelectedMesoTab] = useState<string | null>(null);
   const [importFeedback, setImportFeedback] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const uniqueMuscleGroups = Array.from(new Set(exercises.map((e) => e.muscleGroup)));
@@ -645,10 +129,45 @@ export default function Dashboard({
       const msg = `Importati: ${result.exercises.length} esercizi, ${result.sessions.length} sessioni, ${result.mesocycleStates.length} stati mesociclo, ${result.weeklyVolumes.length} volumi settimanali.`;
       if (!confirm(`Sostituire tutti i dati attuali con quelli importati?\n\n${msg}`)) return;
       importState(result);
-      setImportFeedback(`✅ Dati importati con successo. ${msg}`);
+      setImportFeedback(`Dati importati con successo. ${msg}`);
     };
     reader.readAsText(file);
     e.target.value = '';
+  }
+
+  function handleShareDaily(summary: ReturnType<typeof buildDailySummary>, dateStr: string) {
+    const doShare = (blob: Blob | null) => {
+      const text = [
+        `🏋️ GymOS — Riepilogo Allenamento`,
+        dateStr.charAt(0).toUpperCase() + dateStr.slice(1),
+        '',
+        ...summary.groups.flatMap((g) => [
+          `${g.muscleGroup}: ${g.totalVolume.toFixed(0)} kg·reps (${g.totalSets} serie)`,
+          ...g.exercises.map((ex) => `  • ${ex.name}: ${ex.setsCount} serie, ${ex.volume.toFixed(0)} kg·reps`),
+        ]),
+        '',
+        `Totale: ${summary.totalVolume.toFixed(0)} kg·reps · ${summary.totalSets} serie`,
+        '#GymOS',
+      ].join('\n');
+
+      if (blob && navigator.canShare && navigator.canShare({ files: [new File([blob], 'riepilogo.png', { type: 'image/png' })] })) {
+        navigator.share({
+          title: 'GymOS — Riepilogo Allenamento',
+          text,
+          files: [new File([blob], 'riepilogo.png', { type: 'image/png' })],
+        }).catch(() => {});
+      } else if (navigator.share) {
+        navigator.share({ title: 'GymOS — Riepilogo Allenamento', text }).catch(() => {});
+      } else {
+        navigator.clipboard.writeText(text).then(() => {
+          alert('Riepilogo copiato negli appunti!');
+        }).catch(() => {
+          alert(text);
+        });
+      }
+    };
+
+    drawDailySummaryToBlob(dateStr, summary.groups, summary.totalVolume, summary.totalSets).then(doShare);
   }
 
   const sortedExercises = [...exercises].sort((a, b) => a.order - b.order);
@@ -663,6 +182,9 @@ export default function Dashboard({
           <h1 className="page-title">GymOS</h1>
           <div className="page-subtitle" style={{ textTransform: 'capitalize' }}>{today}</div>
         </div>
+        <button className="btn btn-ghost btn-sm" onClick={() => setShowSettings(true)}>
+          Impostazioni
+        </button>
       </div>
 
       {/* Section: Mesocycles and Volume Tracking */}
@@ -971,30 +493,45 @@ export default function Dashboard({
         </button>
       )}
 
-      {/* Import / Export */}
-      <div className="section-title">Gestione Dati</div>
-      <div className="card" style={{ padding: 'var(--space-4)' }}>
-        <div className="flex gap-2">
-          <button className="btn btn-outline btn-sm" style={{ flex: 1 }} onClick={handleExport}>
-            📥 Esporta CSV
-          </button>
-          <button className="btn btn-outline btn-sm" style={{ flex: 1 }} onClick={() => fileInputRef.current?.click()}>
-            📤 Importa CSV
-          </button>
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".csv"
-          style={{ display: 'none' }}
-          onChange={handleImportFile}
-        />
-        {importFeedback && (
-          <div style={{ marginTop: 'var(--space-3)', fontSize: 'var(--fs-sm)', color: importFeedback.startsWith('✅') ? 'var(--success)' : 'var(--danger)' }}>
-            {importFeedback}
+      {/* Daily Summary */}
+      {(() => {
+        const summary = buildDailySummary(sessions, exercises);
+        if (summary.groups.length === 0) return null;
+        const dateStr = new Date().toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+        return (
+          <div style={{ marginBottom: 'var(--space-6)' }}>
+            <div className="section-title">Riepilogo Oggi</div>
+            <div className="card" style={{ padding: 'var(--space-5)' }}>
+              <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text-secondary)', marginBottom: 'var(--space-4)', textTransform: 'capitalize' }}>
+                {dateStr}
+              </div>
+              {summary.groups.map((g) => (
+                <div key={g.muscleGroup} style={{ marginBottom: 'var(--space-4)' }}>
+                  <div className="flex justify-between items-center" style={{ marginBottom: 'var(--space-2)' }}>
+                    <span className="fw-bold fs-sm" style={{ color: 'var(--accent)' }}>{g.muscleGroup}</span>
+                    <span className="text-secondary fs-xs">{g.totalVolume.toFixed(0)} kg·reps · {g.totalSets} serie</span>
+                  </div>
+                  <div style={{ background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
+                    {g.exercises.map((ex, i) => (
+                      <div key={i} className="flex justify-between items-center" style={{ padding: '8px var(--space-3)', borderBottom: i < g.exercises.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                        <span className="fs-sm">{ex.name}</span>
+                        <span className="text-muted fs-xs">{ex.setsCount} serie · {ex.volume.toFixed(0)} kg·reps</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <div className="flex justify-between items-center" style={{ borderTop: '1px solid var(--border)', paddingTop: 'var(--space-3)', marginBottom: 'var(--space-4)' }}>
+                <span className="fw-bold fs-md">Totale</span>
+                <span className="fw-bold fs-md text-accent">{summary.totalVolume.toFixed(0)} kg·reps · {summary.totalSets} serie</span>
+              </div>
+              <button className="btn btn-primary btn-full" onClick={() => handleShareDaily(summary, dateStr)}>
+                Condividi Riepilogo
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+        );
+      })()}
 
       {/* Exercise Form Modal */}
       {showForm && (
@@ -1004,6 +541,46 @@ export default function Dashboard({
           onCancel={() => { setShowForm(false); setEditingExercise(null); }}
           title={editingExercise ? 'Modifica esercizio' : 'Nuovo esercizio'}
         />
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
+          <div className="modal-sheet" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '480px' }}>
+            <div className="modal-header">
+              <h2 className="modal-title">Impostazioni</h2>
+              <button className="modal-close" onClick={() => setShowSettings(false)}>×</button>
+            </div>
+
+            <div style={{ marginBottom: 'var(--space-4)' }}>
+              <div className="section-title" style={{ marginTop: 0 }}>Gestione Dati</div>
+              <p className="text-secondary fs-sm" style={{ marginBottom: 'var(--space-3)' }}>
+                Esporta tutti i dati in CSV per un backup, o importa un file CSV precedentemente esportato.
+                L'importazione sostituisce completamente i dati correnti.
+              </p>
+              <div className="flex gap-2">
+                <button className="btn btn-outline btn-sm" style={{ flex: 1 }} onClick={handleExport}>
+                  Esporta CSV
+                </button>
+                <button className="btn btn-outline btn-sm" style={{ flex: 1 }} onClick={() => fileInputRef.current?.click()}>
+                  Importa CSV
+                </button>
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                style={{ display: 'none' }}
+                onChange={handleImportFile}
+              />
+              {importFeedback && (
+                <div style={{ marginTop: 'var(--space-3)', fontSize: 'var(--fs-sm)', color: importFeedback.startsWith('Dati importati') ? 'var(--success)' : 'var(--danger)' }}>
+                  {importFeedback}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

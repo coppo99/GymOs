@@ -411,13 +411,20 @@ function useStore() {
 
   const importState = useCallback(
     (data: CsvImportResult) => {
-      update(() => ({
-        exercises: data.exercises,
-        sessions: data.sessions,
-        mesocycleStates: data.mesocycleStates,
-        weeklyVolumes: data.weeklyVolumes,
-        lastUpdated: new Date().toISOString(),
-      }));
+      update((prev) => {
+        try {
+          localStorage.setItem('gymos_v1_backup_pre_import', JSON.stringify(prev));
+        } catch (e) {
+          console.warn('[GymOS] Failed to save pre-import backup:', e);
+        }
+        return {
+          exercises: data.exercises,
+          sessions: data.sessions,
+          mesocycleStates: data.mesocycleStates,
+          weeklyVolumes: data.weeklyVolumes,
+          lastUpdated: new Date().toISOString(),
+        };
+      });
     },
     [update]
   );

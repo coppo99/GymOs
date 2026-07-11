@@ -140,8 +140,28 @@ export function importFromCsv(text: string): CsvImportResult {
     errors: [],
   };
 
-  const rawLines = text.split(/\r?\n/);
-  const lines = rawLines
+  // Multi-line CSV splitter: joins lines inside quoted fields
+  function splitCsvLines(t: string): string[] {
+    const rawLines = t.split(/\r?\n/);
+    const out: string[] = [];
+    let buffer: string[] = [];
+    let inQ = false;
+    for (const line of rawLines) {
+      buffer.push(line);
+      for (let i = 0; i < line.length; i++) {
+        if (line[i] === '"') {
+          if (i + 1 < line.length && line[i + 1] === '"') { i++; continue; }
+          inQ = !inQ;
+        }
+      }
+      if (!inQ) { out.push(buffer.join('\n')); buffer = []; }
+    }
+    if (buffer.length > 0) out.push(buffer.join('\n'));
+    return out;
+  }
+
+  const logicalLines = splitCsvLines(text);
+  const lines = logicalLines
     .map((l) => l.trim())
     .filter((l) => l !== '' && !l.startsWith('# GYMOS') && !l.startsWith('# EXPORTED'));
 

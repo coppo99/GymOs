@@ -1,0 +1,309 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                      GYMOS — STRUTTURA PROGETTO                        ║
+║                Progressive Overload Tracker per Ipertrofia              ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+
+1. DESCRIZIONE GENERALE DELL'APPLICAZIONE
+───────────────────────────────────────────
+
+GymOS e' una web app (PWA-ready) per tracciare allenamenti di ipertrofia
+con progressive overload. Funziona interamente lato client: i dati sono
+salvati nel localStorage del browser. Non c'e' backend, login, o database
+remoto.
+
+L'utente crea esercizi (es. "Panca Piana", "Squat"), li raggruppa per
+gruppo muscolare (es. "Petto", "Gambe"), e per ogni esercizio registra le
+sedute: quante serie, ripetizioni, carico (kg), e RIR (Reps In Reserve).
+
+Il motore di progressione analizza ogni seduta e suggerisce:
+  - AUMENTO: se l'esercizio era facile (RIR alto, tutte le rep fatte)
+  - MANTENIMENTO: se era nella norma
+  - DELOAD: se arriva la settimana di scarico programmata nel mesociclo
+
+Viene tracciato il volume settimanale per gruppo muscolare (somma di
+reps * carico pesato per RIR), con soglie MEV (Minimum Effective Volume)
+e MRV (Maximum Recoverable Volume) per evitare sovrallenamento.
+
+L'interfaccia e' mobile-first, con tab bar in basso (Oggi, Prossima,
+Storico, Esercizi), tema scuro, e stepper numerici per inserimento rapido.
+
+
+2. STRUTTURA DEI FILE
+─────────────────────
+
+
+2.1. File di configurazione
+────────────────────────────────────
+
+  index.html
+    Entry point HTML. Imposta lingua IT, meta tag per PWA (viewport-fit,
+    theme-color, apple-mobile-web-app), carattere Inter via Google Fonts.
+    Il div#root ospita tutta l'app React. Il titolo e' "GymOS — Progressive
+    Overload Tracker".
+
+  package.json
+    Dipendenze: React 19, Vite 8, TypeScript 6, Vitest 4.1.9, fast-check.
+    Script: dev, build (tsc + vite build), test (vitest run), preview.
+
+  vite.config.ts
+    Configura Vite con plugin React e include i test Vitest sotto src/**/*.test.ts.
+
+  tsconfig.json
+    TypeScript per ES2020, JSX react-jsx, strict mode, modulo bundler.
+    Include solo src/.
+
+  .github/workflows/test.yml
+    CI su push/PR per branch main: Node 20, npm ci, npm run test.
+
+  .gitattributes
+    Normativa LF per file di testo.
+
+
+2.2. Entry point React
+───────────────────────
+
+  src/main.tsx
+    Monta App nel DOM, wrappato in StrictMode. Importa index.css.
+
+  src/App.tsx
+    Componente root. Ha uno stato activeView (dashboard | next-workout |
+    history | exercises) e rende la view corrispondente usando i dati
+    dello store (useStore). In fondo ha una tab bar fissa con 4 pulsanti
+    con icona SVG. Ogni view riceve solo le props che servono (prop
+    drilling, no context/Redux).
+
+  src/index.css
+    Design system completo: variabili CSS (colori scuri, font Inter,
+    spaziatura, raggi, ombre), reset, layout (app-shell, main-content
+    con padding-bottom per la tab bar), tab-bar, cards, badge, button
+    (primario, ghost, outline, danger, success, sm, icon, full), form
+    inputs, modal-overlay con animazione slideUp, session logger,
+    suggestion banner, progress dots, history row, empty state, utility
+    classi (flex, gap, text-*, fw-*, ecc.).
+
+  src/vite-env.d.ts
+    Riferimento ai tipi Vite.
+
+
+2.3. Tipi (src/types/)
+────────────────────────
+
+  src/types/index.ts
+    Tutti i tipi TypeScript del dominio:
+      - Exercise: id, nome, gruppo muscolare, serie target, range reps,
+        carico attuale, incremento, RIR target, data creazione, ordine.
+      - SetLog: numero serie (1-based), reps, carico, RIR (null = non loggato).
+      - SessionLog: id, exerciseId, data ISO, array SetLog[], risultato
+        progressione, carico suggerito, note opzionali.
+      - WeeklyVolumeLog: gruppo muscolare, data inizio settimana (Lunedi'),
+        volume lordo e effettivo (RIR-pesato), conteggio serie.
+      - MesocycleState: gruppo muscolare, settimana corrente (0-based),
+        lunghezza mesociclo (default 5), fase (accumulation|deload), MEV, MRV.
+      - AppState: stato globale (esercizi, sessioni, mesocicli, volumi, data).
+      - ProgressionEvaluation: risultato del motore di progressione.
+      - ActiveView: tipo per le tab.
+      - ExerciseFormData: dati del form esercizio (senza id/date/order).
+      - CsvImportResult (esportato da csv.ts ma referenziato dai tipi).
+
+
+2.4. Store (src/store/)
+────────────────────────
+
+  src/store/useStore.ts
+    Store hook custom basato su useState. Carica lo stato all'avvio da
+    localStorage usando loadState(), poi initializeMissingStates() per
+    migrare dati vecchi (es. aggiunge MEV/MRV default ai mesocicli esistenti,
+    calcola avanzamento settimane in base alla data).
+
+    Espone:
+      - exercises, sessions, mesocycleStates, weeklyVolumes (stato)
+      - addExercise, updateExercise, deleteExercise (CRUD)
+      - saveSessionDirect: salva una seduta, aggiorna volume settimanale,
+        valuta progressione via evaluateSession, aggiorna currentLoad
+        dell'esercizio con il carico suggerito.
+      - getLastSession, getSessionsForExercise (selettori filtrati)
+      - getMesocycleState (selettore per gruppo muscolare)
+      - forceWeekIncrement (avanza manualmente la settimana del mesociclo)
+      - importState (sostituisce tutto lo stato con dati importati da CSV)
+
+    Ogni modifica persistita con saveState() in localStorage.
+
+
+2.5. Motore di progressione (src/engine/)
+────────────────────────────────────────────
+
+  src/engine/progression.ts
+    Tutta la logica di progressione. Funzioni pure (no stato globale, no
+    localStorage, no effetti collaterali) per testabilita'.
+
+    Funzioni principali:
+      - roundToIncrement: arrotonda un valore al multiplo piu' vicino
+        dell'incremento (es. 61.3 arrotondato a 2.5 → 62.5).
+      - calculateSlope: regressione lineare per rilevare plateau.
+      - detectPlateau: confronta slope del carico nelle ultime 6+ sessioni;
+        se piatta per almeno 6 sessioni, segnala plateau con suggerimenti.
+      - checkRirReliability: se RIR dichiarato alto ma carico non sale
+        da settimane, segnala RIR inaffidabile.
+      - checkEarlyOverloadWarning: se volume della settimana corrente ha
+        superato MRV e anche la precedente era sopra, avvisa.
+      - calculateVolumeLoad: somma reps*carico per tutte le serie.
+      - calculateEffectiveVolume: volume pesato per fattore RIR
+        (effortFactorForRir).
+      - effortFactorForRir: RIR 0-1 → 1.0, RIR 2-3 → 0.85, RIR 4+ → 0.6,
+        null → 0.75.
+      - getVolumeStatus: confronta conteggio serie con MEV/MRV e classifica
+        (low, optimal, caution, overreaching).
+      - getRolling7DayVolume: volume rolling di 7 giorni (raw + effective).
+      - getWeeklyVolumeTrend: ultime 4 settimane di volume per gruppo.
+      - evaluateSession: dato esercizio, serie loggate, sessioni passate e
+        stato mesociclo, restituisce risultato (deload, maintain, increase)
+        con carico suggerito e motivazione.
+      - getDeloadSetMultiplier: restituisce 0.6 (40% riduzione serie).
+      - getDeloadTargetSets: calcola numero serie ridotto per deload,
+        clampato nel range 40-50% riduzione ove possibile con interi.
+      - adjustLoadForNextSet: regola carico intra-seduta basato su |diff|
+        RIR reale vs target (|diff|>=3 → ±10%, |diff|=2 → ±5%).
+      - getNextSessionLoad: recupera carico suggerito dall'ultima seduta.
+      - validateSetValues: controlla reps (<3 o >25), carico (<1 o >300),
+        RIR (>5 o negativo) e restituisce messaggi avviso.
+      - getProgressionColor/Label: mappa risultato a colore/etichetta IT.
+
+    Funzioni di supporto:
+      - getNextSessionLoad, getProgressionColor, getProgressionLabel
+
+  src/engine/progression.test.ts
+    79 test Vitest (unit + integration + property-based con fast-check).
+    Copertura: effortFactorForRir, calculateEffectiveVolume, calculateVolumeLoad,
+    evaluateSession (tutti i rami: deload, increase, maintain), calculateSlope,
+    detectPlateau, getNextSessionLoad, getVolumeStatus, roundToIncrement,
+    validateSetValues (con test di contorno), getDeloadTargetSets (1-6
+    esaustivo + guardia 35% per input 4+), adjustLoadForNextSet (simmetria
+    |diff|, floor incremento, arrotondamento), test integrazione deload
+    + RIR + volume.
+
+
+2.6. Store
+   (src/utils/storage.ts)
+    Funzioni per salvare/caricare da localStorage chiave 'gymos_v1':
+      - loadState: carica JSON, fallback a default state se errore.
+      - saveState: serializza e salva con timestamp lastUpdated.
+      - clearState: rimuove dal localStorage.
+      - generateId: genera ID unico (timestamp + random).
+      - todayIso: restituisce data odierna in formato YYYY-MM-DD.
+
+   (src/utils/csv.ts)
+    Funzioni per import/export CSV:
+      - exportToCsv: serializza tutto AppState in CSV con sezioni
+        (# EXERCISES, # SESSIONS, # SETS, # MESOCYCLESTATES, # WEEKLYVOLUMES).
+      - importFromCsv: parser CSV con supporto quoting, ricostruisce
+        esercizi/sessioni/series/mesocicli/volumi, segnala errori.
+      - downloadCsv: crea Blob e triggera download browser.
+      - CsvImportResult: interfaccia con array dati + errori.
+
+    Funzioni helper interne: esc (quote CSV), parseLine (split CSV).
+
+
+2.7. Componenti UI (src/components/)
+────────────────────────────────────────
+
+  (src/components/Dashboard.tsx)
+    View principale "Oggi". ~1300 righe. Contiene:
+      - Header con titolo GymOS e pulsante "Impostazioni".
+      - Stato Gruppi Muscolari: selettore tab per gruppo, mostra fase
+        mesociclo (accumulo/deload), settimana corrente, volume effettivo
+        settimanale, bar chart volume ultime 4 settimane (VolumeBarChart),
+        avvisi sovrallenamento.
+      - Lista esercizi: ogni card mostra nome, gruppo, target, ultima
+        seduta, carico suggerito. Click espande per azioni (Logga,
+        Modifica, Elimina, avvisi plateau/RIR, quick stats).
+      - VolumeBarChart: barre volume effettivo + lordo per 4 settimane,
+        con linee MEV/MRV e legenda.
+      - InlineSetLogger: logger seduta inline con stepper numerici per
+        reps/carico/RIR, progress dots, autoregolazione RIR intra-serie
+        (adjustLoadForNextSet), validazione (validateSetValues),
+        valutazione finale (evaluateSession), celebrazione con volumi e PR.
+      - InlineLoggerProps + InlineSetLogger: ~400 righe, gestisce tutto
+        il flusso di inserimento serie.
+      - Riepilogo Oggi (daily summary): sezioni per gruppo muscolare
+        con volumi totali e pulsante Condividi (genera immagine canvas
+        1080xN con riepilogo e la condivide via navigator.share).
+      - FAB "+" per aggiungere esercizio.
+      - Modal Impostazioni (showSettings): Importa/Esporta CSV.
+      - Modal ExerciseForm per creare/modificare esercizi.
+      - Funzioni: drawDailySummaryToBlob (canvas chart), buildDailySummary,
+        handleExport, handleImportFile, handleShareDaily.
+
+  (src/components/ExerciseForm.tsx)
+    Modal per creare/modificare esercizio. Campi:
+      - Nome (testo)
+      - Gruppo muscolare (suggerimenti + testo libero via toggle)
+      - Serie target (numero)
+      - Reps min e max (numeri, default 6-15)
+      - Carico corrente (kg, numero)
+      - Incremento carico (numero, default 2.5)
+      - RIR target (numero opzionale)
+    Pulsanti Salva / Annulla.
+
+  (src/components/ExerciseManager.tsx)
+    Schermata "Esercizi" (tab). Mostra tutti gli esercizi raggruppati
+    per gruppo muscolare, con badge gruppo, pulsanti modifica/elimina.
+    Pulsante "+" in alto per aggiungere.
+
+  (src/components/History.tsx)
+    Schermata "Storico". Selettore esercizio, mostra cronologia sedute
+    con data, numero serie, volume, RIR medio, carico suggerito.
+
+  (src/components/NextWorkout.tsx)
+    Schermata "Prossima". Per ogni esercizio mostra il carico suggerito
+    per la prossima seduta in base all'ultimo risultato.
+
+
+2.8. Assets pubblici (public/)
+────────────────────────────────
+
+  favicon.svg        Icona tab browser
+  icons.svg          Icone PWA
+  vite.svg           Logo Vite (favicon di default)
+
+
+2.9. Assets sorgente (src/assets/)
+────────────────────────────────────
+
+  hero.png           Immagine hero (non utilizzata attualmente)
+  typescript.svg     Logo TypeScript
+  vite.svg           Logo Vite
+
+
+3. FLUSSO DATI TIPICO
+──────────────────────
+
+  1. L'utente crea un esercizio → addExercise() → salva in localStorage
+  2. L'utente clicca "Logga Esercizio" → InlineSetLogger si apre
+  3. Inserisce serie una alla volta con stepper reps/carico/RIR
+     → validateSetValues() avvisa se valori anomali (confirm dialog)
+     → adjustLoadForNextSet() suggerisce carico per serie successiva
+  4. Clicca "Fine Allenamento" → evaluateSession() analizza la seduta
+     confrontandola con le precedenti e lo stato del mesociclo
+  5. Vedi risultato: celebration view con PR, volume, suggerimento
+  6. saveSessionDirect() salva: sessione, volume settimanale aggiornato,
+     currentLoad dell'esercizio aggiornato
+  7. Nel frattempo, initializeMissingStates() all'avvio gestisce:
+     - Calendario: se sono passati 7+ giorni dall'ultimo aggiornamento
+       del mesociclo, avanza settimana e gestisce fase deload/reset
+     - Backfill: se mancano MEV/MRV ai mesocicli esistenti, aggiunge default
+     - Crea mesociclo per nuovi gruppi muscolari
+
+
+4. DIPENDENZE ESTERNE
+──────────────────────
+
+  React 19           UI
+  Vite 8             Bundler / dev server
+  TypeScript 6       Tipi
+  Vitest 4           Test runner
+  fast-check 4       Property-based testing (solo test)
+  @vitejs/plugin-react  Plugin Vite per React
+
+  Zero dipendenze runtime extra: niente router, niente state management
+  library, niente chart library, niente component library.
