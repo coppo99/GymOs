@@ -5,6 +5,7 @@ import type {
   ProgressionEvaluation,
   ProgressionResult,
   MesocycleState,
+  DeloadReason,
 } from '../types';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -49,6 +50,46 @@ export function calculateSlope(values: number[]): number {
   return (n * sumXY - sumX * sumY) / denominator;
 }
 
+// Minimum weeks into accumulation before early deload can trigger.
+// Prevents false deload on noise from the first few sessions.
+export const MIN_WEEKS_BEFORE_EARLY_DELOAD = 2;
+
+// ─── Deload Decision ─────────────────────────────────────────────────────────
+
+/**
+ * Centralized deload decision based on scheduled phase, plateau, and RIR reliability.
+ * Returns whether to trigger deload and the reason.
+ *
+ * Precedence: scheduled > plateau > rir_unreliable
+ * - Scheduled deload always triggers (phase already set to 'deload').
+ * - Plateau triggers early deload if >=50% of group exercises show plateau.
+ * - RIR unreliable triggers early deload if >=50% of group exercises show it.
+ * - If both plateau and RIR trigger, 'plateau' takes priority.
+ * - Early deload never triggers before MIN_WEEKS_BEFORE_EARLY_DELOAD.
+ */
+export function shouldTriggerDeload(
+  mesocycleState: MesocycleState,
+  plateauExercises: boolean[],
+  rirUnreliableExercises: boolean[],
+  minWeeks: number = MIN_WEEKS_BEFORE_EARLY_DELOAD
+): { trigger: boolean; reason: DeloadReason } {
+  if (mesocycleState.phase === 'deload') {
+    return { trigger: true, reason: mesocycleState.deloadReason ?? 'scheduled' };
+  }
+
+  if (mesocycleState.currentWeek < minWeeks) {
+    return { trigger: false, reason: 'scheduled' };
+  }
+
+  const total = Math.max(1, plateauExercises.length);
+  const hasPlateau = plateauExercises.filter(Boolean).length / total >= 0.5;
+  const hasRirIssue = rirUnreliableExercises.filter(Boolean).length / total >= 0.5;
+
+  if (hasPlateau) return { trigger: true, reason: 'plateau' };
+  if (hasRirIssue) return { trigger: true, reason: 'rir_unreliable' };
+  return { trigger: false, reason: 'scheduled' };
+}
+
 // ─── Core Evaluation ─────────────────────────────────────────────────────────
 
 /**
@@ -68,22 +109,45 @@ export function evaluateSession(
   exercise: Exercise,
   sets: SetLog[],
   recentSessions: SessionLog[],
-  mesoState?: MesocycleState
+  mesoState?: MesocycleState,
+  plateauAcrossGroup: boolean = false,
+  rirUnreliableAcrossGroup: boolean = false
 ): ProgressionEvaluation {
   const { repsMin, repsMax, currentLoad, loadIncrement, rirTarget, targetSets } = exercise;
 
-  // 1. Scheduled Deload Phase check
-  if (mesoState && mesoState.phase === 'deload') {
-    const deloadLoad = Math.max(
-      roundToIncrement(currentLoad * 0.9, loadIncrement),
-      loadIncrement
+  if (mesoState) {
+    const deloadDecision = shouldTriggerDeload(
+      mesoState,
+      [plateauAcrossGroup],
+      [rirUnreliableAcrossGroup],
     );
-    const deloadSets = Math.max(1, Math.round(targetSets * 0.6));
-    return {
-      result: 'deload',
-      suggestedLoad: deloadLoad,
-      reason: `Fase deload programmata per ${exercise.muscleGroup} — carico ridotto del 10% a ${deloadLoad} kg, serie target ridotte a ${deloadSets}.`,
-    };
+
+    if (deloadDecision.trigger) {
+      const deloadLoad = Math.max(
+        roundToIncrement(currentLoad * 0.9, loadIncrement),
+        loadIncrement
+      );
+      const deloadSets = Math.max(1, Math.round(targetSets * 0.6));
+
+      if (deloadDecision.reason === 'scheduled') {
+        return {
+          result: 'deload',
+          suggestedLoad: deloadLoad,
+          reason: `Fase deload programmata per ${exercise.muscleGroup} — carico ridotto del 10% a ${deloadLoad} kg, serie target ridotte a ${deloadSets}.`,
+          deloadReason: 'scheduled',
+        };
+      }
+
+      const reasonLabel = deloadDecision.reason === 'plateau'
+        ? 'plateau rilevato su piu esercizi del gruppo'
+        : 'RIR dichiarato inaffidabile su piu esercizi del gruppo';
+      return {
+        result: 'deload',
+        suggestedLoad: deloadLoad,
+        reason: `Deload anticipato: ${reasonLabel} per ${exercise.muscleGroup}. Carico ridotto del 10% a ${deloadLoad} kg, serie target ridotte a ${deloadSets}.`,
+        deloadReason: deloadDecision.reason,
+      };
+    }
   }
 
   // 2. Not enough sets completed
@@ -137,7 +201,7 @@ export function evaluateSession(
     }
   }
 
-  // 5. Reps below minimum -> maintain (not deload reattivo anymore)
+  // 5. Reps below minimum -> maintain
   if (allSetsBelowMin) {
     return {
       result: 'maintain',
@@ -166,34 +230,28 @@ export function evaluateSession(
 // ─── Volume Helpers ──────────────────────────────────────────────────────────
 
 // Default volume thresholds per muscle group (Schoenfeld 2017, Baz-Valle 2022)
-export const DEFAULT_MEV = 6;   // minimum effective volume (sets/week)
-export const DEFAULT_MRV = 25;  // maximum recoverable volume (sets/week)
+export const DEFAULT_MEV = 6;   // minimum effective volume (hard sets/week)
+export const DEFAULT_MRV = 25;  // maximum recoverable volume (hard sets/week)
 export const OPTIMAL_MIN = 10;  // optimal range lower bound
 export const OPTIMAL_MAX = 20;  // optimal range upper bound
 
 /**
- * Effort factor based on RIR (Reps In Reserve).
- * Sets farther from failure contribute less to effective volume.
- * Based on Schoenfeld et al. 2021, Schoenfeld et al. 2016.
+ * Returns true if a set is "hard" (close to failure), meaning RIR ≤ threshold.
+ * Based on the RP/Israetel definition: hard sets = RIR 0-3.
+ * threshold is exposed for future user configuration (default 3).
  */
-export function effortFactorForRir(rir: number | null): number {
-  if (rir === null) return 0.75;
-  if (rir <= 1) return 1.0;
-  if (rir <= 3) return 0.85;
-  return 0.6;
+export function isHardSet(rir: number | null, threshold = 3): boolean {
+  if (rir === null) return false;
+  return rir <= threshold;
 }
 
 /**
- * Calculates the RIR-weighted effective volume load of a set collection.
- * Effective volume = sum(reps * load * effort_factor) across all sets.
- * This replaces raw volume for progression tracking.
+ * Counts the number of hard sets in a collection.
+ * A hard set is one with RIR ≤ threshold.
+ * This is the metric used for MEV/MRV comparisons per RP standards.
  */
-export function calculateEffectiveVolume(sets: SetLog[]): number {
-  return sets.reduce((sum, set) => {
-    const raw = set.reps * set.load;
-    const factor = effortFactorForRir(set.rir);
-    return sum + raw * factor;
-  }, 0);
+export function countHardSets(sets: SetLog[], threshold = 3): number {
+  return sets.filter(s => isHardSet(s.rir, threshold)).length;
 }
 
 /**
@@ -216,14 +274,14 @@ export function getVolumeStatus(
 
 /**
  * Calculates the volume load of a set: reps * load
- * (kept for raw display, use calculateEffectiveVolume for tracking)
+ * Used for trend/PR display, NOT for MEV/MRV comparison.
  */
 export function calculateVolumeLoad(sets: SetLog[]): number {
   return sets.reduce((sum, set) => sum + set.reps * set.load, 0);
 }
 
 /**
- * Returns rolling 7-day effective volume load for a muscle group.
+ * Returns rolling 7-day hard sets count and volume for a muscle group.
  * Reference date defaults to today.
  */
 export function getRolling7DayVolume(
@@ -231,7 +289,7 @@ export function getRolling7DayVolume(
   exercises: Exercise[],
   muscleGroup: string,
   referenceDateStr: string = new Date().toISOString().slice(0, 10)
-): { totalVolume: number; effectiveVolume: number; setCount: number } {
+): { totalVolume: number; hardSets: number; setCount: number } {
   const groupExerciseIds = new Set(
     exercises.filter((ex) => ex.muscleGroup.toLowerCase() === muscleGroup.toLowerCase()).map((ex) => ex.id)
   );
@@ -240,7 +298,7 @@ export function getRolling7DayVolume(
   const sevenDaysAgo = new Date(refDate.getTime() - 7 * 24 * 60 * 60 * 1000);
 
   let totalVolume = 0;
-  let effectiveVolume = 0;
+  let hardSets = 0;
   let setCount = 0;
 
   sessions.forEach((session) => {
@@ -249,30 +307,29 @@ export function getRolling7DayVolume(
     const sessionDate = new Date(session.date);
     if (sessionDate >= sevenDaysAgo && sessionDate <= refDate) {
       totalVolume += calculateVolumeLoad(session.sets);
-      effectiveVolume += calculateEffectiveVolume(session.sets);
+      hardSets += countHardSets(session.sets);
       setCount += session.sets.length;
     }
   });
 
-  return { totalVolume, effectiveVolume, setCount };
+  return { totalVolume, hardSets, setCount };
 }
 
 /**
- * Generates historical weekly effective volume trend blocks going back N weeks.
+ * Generates historical weekly hard sets and volume trend blocks going back N weeks.
  */
 export function getWeeklyVolumeTrend(
   sessions: SessionLog[],
   exercises: Exercise[],
   muscleGroup: string,
   numWeeks: number = 4
-): { weekStart: string; volume: number; effectiveVolume: number; setCount: number }[] {
-  const trend: { weekStart: string; volume: number; effectiveVolume: number; setCount: number }[] = [];
+): { weekStart: string; volume: number; hardSets: number; setCount: number }[] {
+  const trend: { weekStart: string; volume: number; hardSets: number; setCount: number }[] = [];
   const groupExerciseIds = new Set(
     exercises.filter((ex) => ex.muscleGroup.toLowerCase() === muscleGroup.toLowerCase()).map((ex) => ex.id)
   );
 
   const now = new Date();
-  // Find recent Monday
   const day = now.getDay();
   const diff = now.getDate() - day + (day === 0 ? -6 : 1);
   const thisMonday = new Date(now.setDate(diff));
@@ -284,7 +341,7 @@ export function getWeeklyVolumeTrend(
     const weekStartStr = weekStart.toISOString().slice(0, 10);
 
     let rawVolume = 0;
-    let effVolume = 0;
+    let hardSets = 0;
     let sets = 0;
 
     sessions.forEach((s) => {
@@ -292,15 +349,15 @@ export function getWeeklyVolumeTrend(
       const sDate = new Date(s.date);
       if (sDate >= weekStart && sDate < weekEnd) {
         rawVolume += calculateVolumeLoad(s.sets);
-        effVolume += calculateEffectiveVolume(s.sets);
+        hardSets += countHardSets(s.sets);
         sets += s.sets.length;
       }
     });
 
-    trend.push({ weekStart: weekStartStr, volume: rawVolume, effectiveVolume: effVolume, setCount: sets });
+    trend.push({ weekStart: weekStartStr, volume: rawVolume, hardSets, setCount: sets });
   }
 
-  return trend.reverse(); // return oldest to newest
+  return trend.reverse();
 }
 
 // ─── Plateau & Early Warning Engine ──────────────────────────────────────────

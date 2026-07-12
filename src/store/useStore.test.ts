@@ -39,7 +39,7 @@ const importData: CsvImportResult = {
   ],
   sessions: [],
   mesocycleStates: [
-    { muscleGroup: 'Schiena', currentWeek: 1, mesocycleLengthWeeks: 5, phase: 'accumulation', mev: 10, mrv: 20, lastUpdated: '2025-02-01T00:00:00.000Z' },
+    { muscleGroup: 'Schiena', currentWeek: 1, mesocycleLengthWeeks: 5, phase: 'accumulation', mev: 10, mrv: 20, deloadReason: null, lastUpdated: '2025-02-01T00:00:00.000Z' },
   ],
   weeklyVolumes: [],
   errors: [],

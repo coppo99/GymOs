@@ -2,6 +2,8 @@
 
 export type ProgressionResult = 'increase' | 'maintain' | 'deload';
 
+export type DeloadReason = 'scheduled' | 'plateau' | 'rir_unreliable';
+
 export interface Exercise {
   id: string;
   name: string;
@@ -39,7 +41,7 @@ export interface WeeklyVolumeLog {
   muscleGroup: string;
   weekStartDate: string;             // ISO date of Monday (YYYY-MM-DD)
   totalVolumeLoad: number;           // sum of (reps * load) for all sets
-  effectiveVolumeLoad: number;       // RIR-weighted volume load
+  hardSets: number;                  // count of hard sets (RIR ≤ 3)
   setCount: number;
 }
 
@@ -51,6 +53,7 @@ export interface MesocycleState {
   mev: number;                       // minimum effective volume (sets/week)
   mrv: number;                       // maximum recoverable volume (sets/week)
   lastUpdated: string;               // ISO date of last week change
+  deloadReason: DeloadReason | null; // null = accumulation phase
 }
 
 // ─── App State ────────────────────────────────────────────────────────────────
@@ -69,6 +72,7 @@ export interface ProgressionEvaluation {
   result: ProgressionResult;
   suggestedLoad: number;
   reason: string;
+  deloadReason?: DeloadReason;       // present only when result === 'deload'
 }
 
 // ─── UI Types ─────────────────────────────────────────────────────────────────

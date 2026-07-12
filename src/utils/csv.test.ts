@@ -46,12 +46,13 @@ function makeSampleState(): AppState {
         muscleGroup: 'Petto', currentWeek: 2, mesocycleLengthWeeks: 5,
         phase: 'accumulation' as const, mev: 12, mrv: 25,
         lastUpdated: '2025-01-17T00:00:00.000Z',
+        deloadReason: null,
       },
     ],
     weeklyVolumes: [
       {
         muscleGroup: 'Petto', weekStartDate: '2025-01-13',
-        totalVolumeLoad: 1000, effectiveVolumeLoad: 800, setCount: 8,
+        totalVolumeLoad: 1000, hardSets: 5, setCount: 8,
       },
     ],
     lastUpdated: '2025-01-17T12:00:00.000Z',
@@ -173,19 +174,23 @@ describe('importFromCsv', () => {
     expect(result.weeklyVolumes).toEqual([]);
   });
 
-  it('returns empty result for empty string, no throw', () => {
+  it('returns error and empty data for empty string, no throw', () => {
     const result = importFromCsv('');
     expect(result.exercises).toEqual([]);
     expect(result.sessions).toEqual([]);
     expect(result.mesocycleStates).toEqual([]);
     expect(result.weeklyVolumes).toEqual([]);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain('Nessun dato valido');
     expect(() => importFromCsv('')).not.toThrow();
   });
 
-  it('returns empty result for completely invalid content, no throw', () => {
+  it('returns error and empty data for completely invalid content, no throw', () => {
     const result = importFromCsv('not a csv file at all\nfoo,bar,baz');
     expect(result.exercises).toEqual([]);
     expect(result.sessions).toEqual([]);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0]).toContain('Nessun dato valido');
     expect(() => importFromCsv('totally random stuff')).not.toThrow();
   });
 

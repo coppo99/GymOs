@@ -21,9 +21,11 @@ Il motore di progressione analizza ogni seduta e suggerisce:
   - MANTENIMENTO: se era nella norma
   - DELOAD: se arriva la settimana di scarico programmata nel mesociclo
 
-Viene tracciato il volume settimanale per gruppo muscolare (somma di
-reps * carico pesato per RIR), con soglie MEV (Minimum Effective Volume)
-e MRV (Maximum Recoverable Volume) per evitare sovrallenamento.
+Viene tracciato il volume settimanale per gruppo muscolare in due metriche
+separate:
+  - Hard sets count (RIR <= threshold, default 3): usato per confronto con
+    MEV (Minimum Effective Volume) e MRV (Maximum Recoverable Volume)
+  - Volume load (reps * carico): usato per trend/grafici/PR, NON per MEV/MRV
 
 L'interfaccia e' mobile-first, con tab bar in basso (Oggi, Prossima,
 Storico, Esercizi), tema scuro, e stepper numerici per inserimento rapido.
@@ -97,7 +99,7 @@ Storico, Esercizi), tema scuro, e stepper numerici per inserimento rapido.
       - SessionLog: id, exerciseId, data ISO, array SetLog[], risultato
         progressione, carico suggerito, note opzionali.
       - WeeklyVolumeLog: gruppo muscolare, data inizio settimana (Lunedi'),
-        volume lordo e effettivo (RIR-pesato), conteggio serie.
+        volume lordo, hard sets count (RIR <= threshold), conteggio serie.
       - MesocycleState: gruppo muscolare, settimana corrente (0-based),
         lunghezza mesociclo (default 5), fase (accumulation|deload), MEV, MRV.
       - AppState: stato globale (esercizi, sessioni, mesocicli, volumi, data).
@@ -125,7 +127,9 @@ Storico, Esercizi), tema scuro, e stepper numerici per inserimento rapido.
       - getLastSession, getSessionsForExercise (selettori filtrati)
       - getMesocycleState (selettore per gruppo muscolare)
       - forceWeekIncrement (avanza manualmente la settimana del mesociclo)
-      - importState (sostituisce tutto lo stato con dati importati da CSV)
+      - importState (sostituisce tutto lo stato con dati importati da CSV,
+        salva backup del vecchio stato in localStorage
+        chiave 'gymos_v1_backup_pre_import')
 
     Ogni modifica persistita con saveState() in localStorage.
 
@@ -147,15 +151,18 @@ Storico, Esercizi), tema scuro, e stepper numerici per inserimento rapido.
         da settimane, segnala RIR inaffidabile.
       - checkEarlyOverloadWarning: se volume della settimana corrente ha
         superato MRV e anche la precedente era sopra, avvisa.
-      - calculateVolumeLoad: somma reps*carico per tutte le serie.
-      - calculateEffectiveVolume: volume pesato per fattore RIR
-        (effortFactorForRir).
-      - effortFactorForRir: RIR 0-1 → 1.0, RIR 2-3 → 0.85, RIR 4+ → 0.6,
-        null → 0.75.
-      - getVolumeStatus: confronta conteggio serie con MEV/MRV e classifica
-        (low, optimal, caution, overreaching).
-      - getRolling7DayVolume: volume rolling di 7 giorni (raw + effective).
-      - getWeeklyVolumeTrend: ultime 4 settimane di volume per gruppo.
+      - calculateVolumeLoad: somma reps*carico per tutte le serie (usato
+        per trend/grafici/PR, NON per MEV/MRV).
+      - isHardSet: restituisce true se RIR <= threshold (default 3),
+        secondo definizione RP/Israetel (RIR 0-3 = hard set).
+      - countHardSets: conta le serie hard in una collezione.
+        Metrica usata per confronto con MEV/MRV.
+      - getVolumeStatus: confronta conteggio hard sets con MEV/MRV e
+        classifica (low, optimal, caution, overreaching).
+      - getRolling7DayVolume: volume rolling di 7 giorni (raw volume +
+        hard sets count).
+      - getWeeklyVolumeTrend: ultime N settimane (default 4) di volume
+        per gruppo muscolare con raw volume + hard sets count.
       - evaluateSession: dato esercizio, serie loggate, sessioni passate e
         stato mesociclo, restituisce risultato (deload, maintain, increase)
         con carico suggerito e motivazione.
@@ -173,66 +180,116 @@ Storico, Esercizi), tema scuro, e stepper numerici per inserimento rapido.
       - getNextSessionLoad, getProgressionColor, getProgressionLabel
 
   src/engine/progression.test.ts
-    79 test Vitest (unit + integration + property-based con fast-check).
-    Copertura: effortFactorForRir, calculateEffectiveVolume, calculateVolumeLoad,
-    evaluateSession (tutti i rami: deload, increase, maintain), calculateSlope,
-    detectPlateau, getNextSessionLoad, getVolumeStatus, roundToIncrement,
-    validateSetValues (con test di contorno), getDeloadTargetSets (1-6
-    esaustivo + guardia 35% per input 4+), adjustLoadForNextSet (simmetria
-    |diff|, floor incremento, arrotondamento), test integrazione deload
-    + RIR + volume.
+     81 test Vitest (unit + integration + property-based con fast-check).
+     Copertura: isHardSet, countHardSets, calculateVolumeLoad,
+     evaluateSession (tutti i rami: deload, increase, maintain), calculateSlope,
+     detectPlateau, getNextSessionLoad, getVolumeStatus, roundToIncrement,
+     validateSetValues (con test di contorno), getDeloadTargetSets (1-6
+     esaustivo + guardia 35% per input 4+), adjustLoadForNextSet (simmetria
+     |diff|, floor incremento, arrotondamento), test integrazione deload
+     + RIR + volume. Property-based: countHardSets (non negativo,
+     monotonicita' threshold), calculateSlope (sequenze crescenti/
+     decrescenti/costanti).
 
 
-2.6. Store
-   (src/utils/storage.ts)
-    Funzioni per salvare/caricare da localStorage chiave 'gymos_v1':
-      - loadState: carica JSON, fallback a default state se errore.
-      - saveState: serializza e salva con timestamp lastUpdated.
-      - clearState: rimuove dal localStorage.
-      - generateId: genera ID unico (timestamp + random).
-      - todayIso: restituisce data odierna in formato YYYY-MM-DD.
+2.6. Utility e Test
+    (src/utils/storage.ts)
+     Funzioni per salvare/caricare da localStorage chiave 'gymos_v1':
+       - loadState: carica JSON, fallback a default state se errore
+         (gestione campi mancanti per retrocompatibilita').
+       - saveState: serializza e salva con timestamp lastUpdated.
+       - clearState: rimuove dal localStorage.
+       - generateId: genera ID unico (timestamp + random).
+       - todayIso: restituisce data odierna in formato YYYY-MM-DD.
+
+   (src/utils/storage.test.ts)
+     15 test Vitest. Copertura:
+       - loadState: localStorage vuoto, JSON corrotto, backward compat
+         (campi mancanti), stato ben formato.
+       - saveState + loadState round-trip (sovrascrittura, lastUpdated).
+       - clearState.
+       - generateId: 1000 chiamate senza collisioni.
 
    (src/utils/csv.ts)
-    Funzioni per import/export CSV:
-      - exportToCsv: serializza tutto AppState in CSV con sezioni
-        (# EXERCISES, # SESSIONS, # SETS, # MESOCYCLESTATES, # WEEKLYVOLUMES).
-      - importFromCsv: parser CSV con supporto quoting, ricostruisce
-        esercizi/sessioni/series/mesocicli/volumi, segnala errori.
-      - downloadCsv: crea Blob e triggera download browser.
-      - CsvImportResult: interfaccia con array dati + errori.
+     Funzioni per import/export CSV con formato a sezioni:
+       - exportToCsv: serializza tutto AppState in CSV con sezioni
+         (# EXERCISES, # SESSIONS, # SETS, # MESOCYCLESTATES, # WEEKLYVOLUMES).
+       - importFromCsv: parser CSV con supporto quoting e multilinea
+         (splitCsvLines gestisce campi quotati su piu' righe).
+         Rileva file vuoti/non validi (errore "Nessun dato valido trovato").
+       - downloadCsv: crea Blob e triggera download browser.
+       - CsvImportResult: interfaccia con array dati + errori.
 
-    Funzioni helper interne: esc (quote CSV), parseLine (split CSV).
+     Funzioni helper interne: esc (quote CSV), parseLine (split CSV),
+     toNum/toNumOrNull.
+
+   (src/utils/csv.test.ts)
+     20 test Vitest. Copertura:
+       - Round-trip export→import: AppState completo (accenti, RIR null,
+         caratteri speciali).
+       - Edge case: virgola in campo quotato, caratteri accentati,
+         righe vuote intermedie, file troncato, sezioni mancanti,
+         input vuoto/invalido, quote escape, newline in campo quotato.
+       - Errori: colonne insufficienti, numero non valido, sessionId
+         sconosciuto.
+       - Export isolato: stato vuoto, decimali, zero/negativi.
+
+   (src/utils/dailySummaryImage.ts)
+     Generatore di immagine PNG per riepilogo giornaliero:
+       - buildDailySummary: raggruppa sessioni di oggi per gruppo
+         muscolare con volume load e conteggio serie.
+       - drawDailySummaryToBlob: canvas 1080xH con gradiente scuro,
+         header data, sezioni per gruppo con esercizi, totali, footer,
+         ritorna Blob PNG via canvas.toBlob().
+
+   (src/store/useStore.test.ts)
+     5 test Vitest. Copertura:
+       - Backup pre-import (gymos_v1_backup_pre_import) salvato prima
+         della sostituzione stato.
+       - Backup non creato se nessuno stato precedente.
+       - lastUpdated aggiornato.
+       - Backup preservato da operazioni di salvataggio normali.
 
 
 2.7. Componenti UI (src/components/)
 ────────────────────────────────────────
 
-  (src/components/Dashboard.tsx)
-    View principale "Oggi". ~1300 righe. Contiene:
-      - Header con titolo GymOS e pulsante "Impostazioni".
-      - Stato Gruppi Muscolari: selettore tab per gruppo, mostra fase
-        mesociclo (accumulo/deload), settimana corrente, volume effettivo
-        settimanale, bar chart volume ultime 4 settimane (VolumeBarChart),
-        avvisi sovrallenamento.
-      - Lista esercizi: ogni card mostra nome, gruppo, target, ultima
-        seduta, carico suggerito. Click espande per azioni (Logga,
-        Modifica, Elimina, avvisi plateau/RIR, quick stats).
-      - VolumeBarChart: barre volume effettivo + lordo per 4 settimane,
-        con linee MEV/MRV e legenda.
-      - InlineSetLogger: logger seduta inline con stepper numerici per
-        reps/carico/RIR, progress dots, autoregolazione RIR intra-serie
-        (adjustLoadForNextSet), validazione (validateSetValues),
-        valutazione finale (evaluateSession), celebrazione con volumi e PR.
-      - InlineLoggerProps + InlineSetLogger: ~400 righe, gestisce tutto
-        il flusso di inserimento serie.
-      - Riepilogo Oggi (daily summary): sezioni per gruppo muscolare
-        con volumi totali e pulsante Condividi (genera immagine canvas
-        1080xN con riepilogo e la condivide via navigator.share).
-      - FAB "+" per aggiungere esercizio.
-      - Modal Impostazioni (showSettings): Importa/Esporta CSV.
-      - Modal ExerciseForm per creare/modificare esercizi.
-      - Funzioni: drawDailySummaryToBlob (canvas chart), buildDailySummary,
-        handleExport, handleImportFile, handleShareDaily.
+   (src/components/Dashboard.tsx)  ~590 righe
+     View principale "Oggi". Contiene:
+       - Header con titolo GymOS e pulsante "Impostazioni" (apre modal).
+       - Stato Gruppi Muscolari: selettore tab per gruppo, mostra fase
+         mesociclo (accumulo/deload), settimana corrente, hard sets
+         settimanali, bar chart hard sets ultime 4 settimane
+         (VolumeBarChart), avvisi sovrallenamento.
+       - Lista esercizi: ogni card mostra nome, gruppo, target, ultima
+         seduta, carico suggerito. Click espande per azioni (Logga,
+         Modifica, Elimina, avvisi plateau/RIR, quick stats).
+         L'espansione attiva InlineSetLogger.
+       - Riepilogo Oggi (daily summary): sezioni per gruppo muscolare
+         con volumi e pulsante Condividi (genera immagine canvas
+         1080xN e condivide via navigator.share con file PNG).
+       - FAB "+" per aggiungere esercizio.
+       - Modal Impostazioni (showSettings): Importa/Esporta CSV.
+       - Modal ExerciseForm per creare/modificare esercizi.
+
+   (src/components/VolumeBarChart.tsx)  ~65 righe
+     Componente estratto da Dashboard. Mostra barre verticali con
+     hard sets count per le ultime 4 settimane. Sfondo semitrasparente
+     mostra raw volume load come riferimento. Etichetta valore sopra
+     ogni barra.
+
+   (src/components/InlineSetLogger.tsx)  ~500 righe
+     Componente estratto da Dashboard. Logger seduta inline con:
+       - Stepper numerici per reps/carico/RIR con pulsanti +/-.
+       - Progress dots (stile RP) per le serie target.
+       - Autoregolazione RIR intra-serie (adjustLoadForNextSet).
+       - Validazione input (validateSetValues) con confirm dialog.
+       - Valutazione finale (evaluateSession) con risultato e carico
+         suggerito.
+       - Celebration view: PR carico, PR volume, delta percentuale,
+         suggerimento prossima seduta, pulsante Condividi (testo via
+         navigator.share o clipboard).
+       - Gestione deload: badge avviso, target serie ridotto, carico -10%.
 
   (src/components/ExerciseForm.tsx)
     Modal per creare/modificare esercizio. Campi:
@@ -283,11 +340,11 @@ Storico, Esercizi), tema scuro, e stepper numerici per inserimento rapido.
   3. Inserisce serie una alla volta con stepper reps/carico/RIR
      → validateSetValues() avvisa se valori anomali (confirm dialog)
      → adjustLoadForNextSet() suggerisce carico per serie successiva
-  4. Clicca "Fine Allenamento" → evaluateSession() analizza la seduta
-     confrontandola con le precedenti e lo stato del mesociclo
-  5. Vedi risultato: celebration view con PR, volume, suggerimento
-  6. saveSessionDirect() salva: sessione, volume settimanale aggiornato,
-     currentLoad dell'esercizio aggiornato
+   4. Clicca "Fine Allenamento" → evaluateSession() analizza la seduta
+      confrontandola con le precedenti e lo stato del mesociclo
+   5. Vedi risultato: celebration view con PR (carico/volume), suggerimento
+   6. saveSessionDirect() salva: sessione, volume settimanale (hard sets
+      count + volume load), currentLoad dell'esercizio aggiornato
   7. Nel frattempo, initializeMissingStates() all'avvio gestisce:
      - Calendario: se sono passati 7+ giorni dall'ultimo aggiornamento
        del mesociclo, avanza settimana e gestisce fase deload/reset
@@ -301,7 +358,8 @@ Storico, Esercizi), tema scuro, e stepper numerici per inserimento rapido.
   React 19           UI
   Vite 8             Bundler / dev server
   TypeScript 6       Tipi
-  Vitest 4           Test runner
+   Vitest 4           Test runner (121 test: 81 progression + 20 csv
+                       + 15 storage + 5 useStore)
   fast-check 4       Property-based testing (solo test)
   @vitejs/plugin-react  Plugin Vite per React
 

@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
 import {
-  calculateEffectiveVolume,
-  effortFactorForRir,
   calculateVolumeLoad,
+  isHardSet,
+  countHardSets,
   evaluateSession,
+  shouldTriggerDeload,
   calculateSlope,
   detectPlateau,
   getNextSessionLoad,
@@ -62,88 +63,121 @@ function makeMesoState(overrides: Partial<MesocycleState> = {}): MesocycleState 
     mev: DEFAULT_MEV,
     mrv: DEFAULT_MRV,
     lastUpdated: '2025-01-01T00:00:00.000Z',
+    deloadReason: null,
     ...overrides,
   };
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// 1. Effective Volume with RIR Coefficient
+// 1. Hard Set Detection (RP/Israetel definition)
 // ══════════════════════════════════════════════════════════════════════════════
 
-describe('effortFactorForRir', () => {
-  it('returns 1.0 for RIR 0 (failure)', () => {
-    expect(effortFactorForRir(0)).toBe(1.0);
+describe('isHardSet', () => {
+  it('returns true for RIR 0 (failure)', () => {
+    expect(isHardSet(0)).toBe(true);
   });
 
-  it('returns 1.0 for RIR 1', () => {
-    expect(effortFactorForRir(1)).toBe(1.0);
+  it('returns true for RIR 3 (upper boundary of hard)', () => {
+    expect(isHardSet(3)).toBe(true);
   });
 
-  it('returns 0.85 for RIR 2 and 3', () => {
-    expect(effortFactorForRir(2)).toBe(0.85);
-    expect(effortFactorForRir(3)).toBe(0.85);
+  it('returns false for RIR 4 (not hard)', () => {
+    expect(isHardSet(4)).toBe(false);
   });
 
-  it('returns 0.6 for RIR 4+', () => {
-    expect(effortFactorForRir(4)).toBe(0.6);
-    expect(effortFactorForRir(5)).toBe(0.6);
-    expect(effortFactorForRir(10)).toBe(0.6);
+  it('returns false for RIR 10', () => {
+    expect(isHardSet(10)).toBe(false);
   });
 
-  it('returns 0.75 for null RIR (conservative default)', () => {
-    expect(effortFactorForRir(null)).toBe(0.75);
+  it('returns false for null RIR (unknown, conservative)', () => {
+    expect(isHardSet(null)).toBe(false);
+  });
+
+  it('respects custom threshold param', () => {
+    expect(isHardSet(2, 1)).toBe(false);  // threshold 1, RIR 2 > 1 → not hard
+    expect(isHardSet(1, 1)).toBe(true);   // threshold 1, RIR 1 ≤ 1 → hard
+    expect(isHardSet(5, 5)).toBe(true);   // threshold 5, RIR 5 ≤ 5 → hard
+    expect(isHardSet(6, 5)).toBe(false);  // threshold 5, RIR 6 > 5 → not hard
   });
 });
 
-describe('calculateEffectiveVolume', () => {
-  it('matches raw volume when all sets are RIR 0-1', () => {
-    const sets: SetLog[] = [
+describe('countHardSets', () => {
+  it('counts all sets when all are hard (RIR 0-3)', () => {
+    const sets = [
       { setNumber: 1, reps: 8, load: 60, rir: 0 },
-      { setNumber: 2, reps: 7, load: 60, rir: 1 },
+      { setNumber: 2, reps: 8, load: 60, rir: 2 },
+      { setNumber: 3, reps: 8, load: 60, rir: 3 },
     ];
-    const raw = calculateVolumeLoad(sets); // 8*60 + 7*60 = 900
-    const effective = calculateEffectiveVolume(sets);
-    expect(effective).toBe(raw); // each set has factor 1.0
+    expect(countHardSets(sets)).toBe(3);
   });
 
-  it('applies 0.85 factor for RIR 2-3 sets', () => {
-    const sets: SetLog[] = [
-      { setNumber: 1, reps: 10, load: 50, rir: 2 },
+  it('counts zero when no sets are hard', () => {
+    const sets = [
+      { setNumber: 1, reps: 8, load: 60, rir: 4 },
+      { setNumber: 2, reps: 8, load: 60, rir: 5 },
+      { setNumber: 3, reps: 8, load: 60, rir: null },
     ];
-    const expected = 10 * 50 * 0.85;
-    expect(calculateEffectiveVolume(sets)).toBe(expected);
+    expect(countHardSets(sets)).toBe(0);
   });
 
-  it('applies 0.6 factor for RIR 4+ sets', () => {
-    const sets: SetLog[] = [
-      { setNumber: 1, reps: 12, load: 40, rir: 5 },
+  it('counts mixed hard/non-hard sets correctly', () => {
+    const sets = [
+      { setNumber: 1, reps: 8, load: 60, rir: 0 },   // hard
+      { setNumber: 2, reps: 8, load: 60, rir: 4 },   // not hard
+      { setNumber: 3, reps: 8, load: 60, rir: 2 },   // hard
     ];
-    const expected = 12 * 40 * 0.6;
-    expect(calculateEffectiveVolume(sets)).toBe(expected);
+    expect(countHardSets(sets)).toBe(2);
   });
 
-  it('applies 0.75 factor for sets without RIR logged', () => {
-    const sets: SetLog[] = [
-      { setNumber: 1, reps: 10, load: 50, rir: null },
-    ];
-    const expected = 10 * 50 * 0.75;
-    expect(calculateEffectiveVolume(sets)).toBe(expected);
+  it('returns 0 for empty array', () => {
+    expect(countHardSets([])).toBe(0);
   });
 
-  it('handles mixed RIR values correctly', () => {
-    const sets: SetLog[] = [
-      { setNumber: 1, reps: 8, load: 60, rir: 1 },    // factor 1.0  → 480
-      { setNumber: 2, reps: 8, load: 60, rir: 3 },    // factor 0.85 → 408
-      { setNumber: 3, reps: 6, load: 60, rir: 5 },    // factor 0.6  → 216
+  it('respects custom threshold', () => {
+    const sets = [
+      { setNumber: 1, reps: 8, load: 60, rir: 3 },  // hard at threshold 3
+      { setNumber: 2, reps: 8, load: 60, rir: 2 },  // hard at threshold 3
+      { setNumber: 3, reps: 8, load: 60, rir: 4 },  // not hard at threshold 3
     ];
-    const raw = calculateVolumeLoad(sets); // (8+8+6)*60 = 1320
-    const effective = calculateEffectiveVolume(sets); // 480+408+216 = 1104
-    expect(effective).toBe(1104);
-    expect(effective).toBeLessThan(raw);
+    expect(countHardSets(sets, 3)).toBe(2);
+    expect(countHardSets(sets, 4)).toBe(3);  // threshold 4 → all hard
+    expect(countHardSets(sets, 1)).toBe(0);  // threshold 1 → none hard
+  });
+});
+
+describe('countHardSets (property-based)', () => {
+  it('is never negative and never exceeds array length', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom(0, 1, 2, 3, 4, 5, null)),
+        (rirs) => {
+          const sets: SetLog[] = rirs.map((rir, i) => ({
+            setNumber: i + 1, reps: 8, load: 60, rir,
+          }));
+          const count = countHardSets(sets);
+          expect(count).toBeGreaterThanOrEqual(0);
+          expect(count).toBeLessThanOrEqual(sets.length);
+        }
+      )
+    );
   });
 
-  it('returns 0 for empty sets', () => {
-    expect(calculateEffectiveVolume([])).toBe(0);
+  it('is monotonic with threshold (higher threshold → more or equal hard sets)', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.constantFrom(0, 1, 2, 3, 4, 5, null), { minLength: 1, maxLength: 20 }),
+        fc.integer({ min: 0, max: 5 }),
+        (rirs, t1) => {
+          const t2 = Math.min(t1 + 1, 5);
+          const sets: SetLog[] = rirs.map((rir, i) => ({
+            setNumber: i + 1, reps: 8, load: 60, rir,
+          }));
+          const c1 = countHardSets(sets, t1);
+          const c2 = countHardSets(sets, t2);
+          expect(c2).toBeGreaterThanOrEqual(c1);
+        }
+      )
+    );
   });
 });
 
@@ -164,6 +198,7 @@ describe('evaluateSession — deload phase', () => {
     const result = evaluateSession(exercise, sets, [], meso);
     expect(result.result).toBe('deload');
     expect(result.suggestedLoad).toBe(90); // 100 * 0.9
+    expect(result.deloadReason).toBe('scheduled');
   });
 
   it('deload reduces load to 90% rounded to nearest increment', () => {
@@ -179,6 +214,76 @@ describe('evaluateSession — deload phase', () => {
     const meso = makeMesoState({ phase: 'deload' });
     const result = evaluateSession(exercise, [makeSet()], [], meso);
     expect(result.suggestedLoad).toBeGreaterThanOrEqual(2.5);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 2b. shouldTriggerDeload
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('shouldTriggerDeload', () => {
+  it('returns trigger=true with preserved reason when already in deload phase', () => {
+    const meso = makeMesoState({ phase: 'deload', deloadReason: 'plateau' });
+    const result = shouldTriggerDeload(meso, [], []);
+    expect(result.trigger).toBe(true);
+    expect(result.reason).toBe('plateau');
+  });
+
+  it('falls back to scheduled when deloadReason is null in deload phase', () => {
+    const meso = makeMesoState({ phase: 'deload', deloadReason: null });
+    const result = shouldTriggerDeload(meso, [], []);
+    expect(result.trigger).toBe(true);
+    expect(result.reason).toBe('scheduled');
+  });
+
+  it('returns trigger=false before MIN_WEEKS_BEFORE_EARLY_DELOAD regardless of plateau', () => {
+    const meso = makeMesoState({ currentWeek: 1 });
+    const result = shouldTriggerDeload(meso, [true], [false]);
+    expect(result.trigger).toBe(false);
+    expect(result.reason).toBe('scheduled');
+  });
+
+  it('returns trigger=true with reason=plateau when >=50% of exercises plateau', () => {
+    const meso = makeMesoState({ currentWeek: 3 });
+    const result = shouldTriggerDeload(meso, [true, true, false], [false, false, false]);
+    expect(result.trigger).toBe(true);
+    expect(result.reason).toBe('plateau');
+  });
+
+  it('returns trigger=true with reason=rir_unreliable when >=50% have RIR issues and no plateau', () => {
+    const meso = makeMesoState({ currentWeek: 3 });
+    const result = shouldTriggerDeload(meso, [false, false], [true, true, false]);
+    expect(result.trigger).toBe(true);
+    expect(result.reason).toBe('rir_unreliable');
+  });
+
+  it('plateau takes priority over RIR unreliable when both trigger', () => {
+    const meso = makeMesoState({ currentWeek: 3 });
+    const result = shouldTriggerDeload(meso, [true, false], [true, false]);
+    expect(result.trigger).toBe(true);
+    expect(result.reason).toBe('plateau');
+  });
+
+  it('returns trigger=false when neither plateau nor RIR issues meet threshold', () => {
+    const meso = makeMesoState({ currentWeek: 3 });
+    const result = shouldTriggerDeload(meso, [true, false, false], [false, false]);
+    expect(result.trigger).toBe(false);
+    expect(result.reason).toBe('scheduled');
+  });
+
+  it('handles empty arrays (no group exercises) with no trigger', () => {
+    const meso = makeMesoState({ currentWeek: 3 });
+    const result = shouldTriggerDeload(meso, [], []);
+    expect(result.trigger).toBe(false);
+    expect(result.reason).toBe('scheduled');
+  });
+
+  it('respects custom minWeeks parameter', () => {
+    const meso = makeMesoState({ currentWeek: 5 });
+    // With minWeeks=10, should not trigger despite plateau
+    const result = shouldTriggerDeload(meso, [true, true, true], [], 10);
+    expect(result.trigger).toBe(false);
+    expect(result.reason).toBe('scheduled');
   });
 });
 
@@ -701,6 +806,7 @@ describe('evaluateSession — integration: deload has priority', () => {
     expect(result.result).toBe('deload');
     // 80 * 0.9 = 72; roundToIncrement(72, 2.5) = 72.5
     expect(result.suggestedLoad).toBe(72.5);
+    expect(result.deloadReason).toBe('scheduled');
   });
 
   it('returns deload even with perfect RIR and max reps', () => {
@@ -719,5 +825,56 @@ describe('evaluateSession — integration: deload has priority', () => {
     // Even a perfect session in deload phase → deload
     expect(result.result).toBe('deload');
     expect(result.reason).toContain('deload');
+    expect(result.deloadReason).toBe('scheduled');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 13. Early Deload (plateau / RIR unreliable)
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('evaluateSession — early deload', () => {
+  it('triggers early deload with reason=plateau when plateauAcrossGroup is true and min weeks passed', () => {
+    const exercise = makeExercise({ currentLoad: 80, loadIncrement: 2.5, targetSets: 3 });
+    const sets: SetLog[] = [
+      { setNumber: 1, reps: 8, load: 80, rir: 2 },
+      { setNumber: 2, reps: 8, load: 80, rir: 2 },
+      { setNumber: 3, reps: 8, load: 80, rir: 2 },
+    ];
+    const meso = makeMesoState({ currentWeek: 3, phase: 'accumulation' });
+    const result = evaluateSession(exercise, sets, [], meso, true, false);
+    expect(result.result).toBe('deload');
+    expect(result.deloadReason).toBe('plateau');
+    expect(result.suggestedLoad).toBe(72.5); // 80 * 0.9
+    expect(result.reason).toContain('plateau');
+  });
+
+  it('triggers early deload with reason=rir_unreliable when rirUnreliableAcrossGroup is true and min weeks passed', () => {
+    const exercise = makeExercise({ currentLoad: 60, loadIncrement: 5, targetSets: 3 });
+    const sets: SetLog[] = [
+      { setNumber: 1, reps: 8, load: 60, rir: 2 },
+      { setNumber: 2, reps: 8, load: 60, rir: 2 },
+      { setNumber: 3, reps: 8, load: 60, rir: 2 },
+    ];
+    const meso = makeMesoState({ currentWeek: 3, phase: 'accumulation' });
+    const result = evaluateSession(exercise, sets, [], meso, false, true);
+    expect(result.result).toBe('deload');
+    expect(result.deloadReason).toBe('rir_unreliable');
+    expect(result.suggestedLoad).toBe(55); // 60 * 0.9 = 54, roundToIncrement(54, 5) = 55
+    expect(result.reason).toContain('RIR');
+  });
+
+  it('does not trigger early deload before MIN_WEEKS_BEFORE_EARLY_DELOAD', () => {
+    const exercise = makeExercise({ currentLoad: 60, loadIncrement: 5, targetSets: 3 });
+    const sets: SetLog[] = [
+      { setNumber: 1, reps: 8, load: 60, rir: 2 },
+      { setNumber: 2, reps: 8, load: 60, rir: 2 },
+      { setNumber: 3, reps: 8, load: 60, rir: 2 },
+    ];
+    // currentWeek=1 < MIN_WEEKS_BEFORE_EARLY_DELOAD=2
+    const meso = makeMesoState({ currentWeek: 1, phase: 'accumulation' });
+    const result = evaluateSession(exercise, sets, [], meso, true, true);
+    expect(result.result).not.toBe('deload');
+    expect(result.deloadReason).toBeUndefined();
   });
 });

@@ -214,9 +214,9 @@ export default function Dashboard({
 
               const meso = getMesocycleState(activeGroup);
               const weeklyTrend = getWeeklyVolumeTrend(sessions, exercises, activeGroup, 4);
-              const currentWeekEffVol = weeklyTrend[3]?.effectiveVolume ?? 0;
+              const currentWeekEffVol = weeklyTrend[3]?.hardSets ?? 0;
               const currentWeekRawVol = weeklyTrend[3]?.volume ?? 0;
-              const prevWeekEffVol = weeklyTrend[2]?.effectiveVolume ?? 0;
+              const prevWeekEffVol = weeklyTrend[2]?.hardSets ?? 0;
               const currentWeekSetCount = weeklyTrend[3]?.setCount ?? 0;
 
               let deltaPct = 0;
@@ -236,7 +236,9 @@ export default function Dashboard({
                     <div className="flex justify-between items-center" style={{ marginBottom: 'var(--space-3)' }}>
                       <div>
                         <span className="fw-bold fs-base" style={{ marginRight: 'var(--space-2)' }}>
-                          Meso: {meso.phase === 'deload' ? '🔴 Deload' : '⚡ Accumulo'}
+                          Meso: {meso.phase === 'deload'
+                            ? `🔴 Deload${meso.deloadReason === 'plateau' ? ' (plateau)' : meso.deloadReason === 'rir_unreliable' ? ' (RIR inaffidabile)' : ''}`
+                            : '⚡ Accumulo'}
                         </span>
                         <span className="text-muted fs-sm">
                           Settimana {meso.currentWeek + 1} di {meso.mesocycleLengthWeeks}
@@ -254,9 +256,9 @@ export default function Dashboard({
 
                   <div className="flex justify-between items-center" style={{ background: 'var(--bg-elevated)', padding: 'var(--space-3)', borderRadius: 'var(--radius)', borderBottomLeftRadius: 0, borderBottomRightRadius: 0 }}>
                     <div>
-                      <div className="fs-xs text-muted">Volume Effettivo Settimanale</div>
+                      <div className="fs-xs text-muted">Hard Sets Settimanali</div>
                       <div className="fw-bold fs-md" style={{ color: 'var(--accent)' }}>
-                        {currentWeekEffVol.toFixed(0)} <span className="fs-xs text-muted">kg*reps</span>
+                        {currentWeekEffVol} <span className="fs-xs text-muted">hard sets</span>
                       </div>
                       {meso && (
                         <div style={{ marginTop: '2px' }}>

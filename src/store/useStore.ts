@@ -9,7 +9,7 @@ import type {
   WeeklyVolumeLog,
 } from '../types';
 import { loadState, saveState, generateId, todayIso } from '../utils/storage';
-import { evaluateSession, calculateVolumeLoad, calculateEffectiveVolume, DEFAULT_MEV, DEFAULT_MRV } from '../engine/progression';
+import { evaluateSession, calculateVolumeLoad, countHardSets, DEFAULT_MEV, DEFAULT_MRV, isHardSet } from '../engine/progression';
 import type { CsvImportResult } from '../utils/csv';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -49,6 +49,7 @@ function initializeMissingStates(state: AppState): AppState {
         phase: 'accumulation',
         mev: DEFAULT_MEV,
         mrv: DEFAULT_MRV,
+        deloadReason: null,
         lastUpdated: new Date().toISOString(),
       });
     }
@@ -62,11 +63,14 @@ function initializeMissingStates(state: AppState): AppState {
 
   // 4. Backward compat: ensure all meso states have mev/mrv
   const mesoWithDefaults = mesocycleStates.map((meso) => {
-    if (meso.mev === undefined || meso.mrv === undefined) {
+    const updated = { ...meso };
+    if (updated.mev === undefined) { modified = true; updated.mev = DEFAULT_MEV; }
+    if (updated.mrv === undefined) { modified = true; updated.mrv = DEFAULT_MRV; }
+    if (updated.deloadReason === undefined) {
       modified = true;
-      return { ...meso, mev: meso.mev ?? DEFAULT_MEV, mrv: meso.mrv ?? DEFAULT_MRV };
+      updated.deloadReason = updated.phase === 'deload' ? 'scheduled' as const : null;
     }
-    return meso;
+    return updated;
   });
 
   // 5. Calendar-based Mesocycle week increment check
@@ -97,6 +101,7 @@ function initializeMissingStates(state: AppState): AppState {
         ...meso,
         currentWeek: finalWeek,
         phase: nextPhase,
+        deloadReason: nextPhase === 'deload' ? 'scheduled' as const : null,
         lastUpdated: now.toISOString(),
       };
     }
@@ -104,7 +109,7 @@ function initializeMissingStates(state: AppState): AppState {
   });
 
   if (modified) {
-    const nextState = {
+    const nextState: AppState = {
       ...state,
       exercises,
       mesocycleStates: updatedMesoStates,
@@ -166,6 +171,7 @@ function useStore() {
             phase: 'accumulation',
             mev: DEFAULT_MEV,
             mrv: DEFAULT_MRV,
+            deloadReason: null,
             lastUpdated: new Date().toISOString(),
           });
         }
@@ -216,6 +222,7 @@ function useStore() {
               phase: 'accumulation',
               mev: DEFAULT_MEV,
               mrv: DEFAULT_MRV,
+              deloadReason: null,
               lastUpdated: new Date().toISOString(),
             });
           }
@@ -273,14 +280,50 @@ function useStore() {
           (m) => m.muscleGroup.toLowerCase() === exercise.muscleGroup.toLowerCase()
         );
 
-        const exerciseSessions = prev.sessions
-          .filter((s) => s.exerciseId === exerciseId)
-          .sort((a, b) => b.date.localeCompare(a.date));
+        // Compute group-level plateau and RIR unreliability flags
+        const groupExercises = prev.exercises.filter(
+          (e) => e.muscleGroup.toLowerCase() === exercise.muscleGroup.toLowerCase()
+        );
 
-        const evaluation = evaluateSession(exercise, sets, exerciseSessions, mesoState);
+        const plateauFlags: boolean[] = [];
+        const rirUnreliableFlags: boolean[] = [];
+
+        groupExercises.forEach((ex) => {
+          const exSessions = prev.sessions
+            .filter((s) => s.exerciseId === ex.id)
+            .sort((a, b) => b.date.localeCompare(a.date));
+
+          // Plateau: last 2+ sessions are 'maintain' with no 'increase' in between
+          const recentResults = exSessions.slice(0, 2).map((s) => s.progressionResult);
+          plateauFlags.push(recentResults.length >= 2 && recentResults.every((r) => r === 'maintain'));
+
+          // RIR unreliable: RIR contradicts performance
+          const lastSession = exSessions[0];
+          if (lastSession && lastSession.sets.length > 0) {
+            const rirVals = lastSession.sets.map((s) => s.rir).filter((r): r is number => r !== null);
+            if (rirVals.length > 0) {
+              const avgRir = rirVals.reduce((a, b) => a + b, 0) / rirVals.length;
+              const avgReps = lastSession.sets.reduce((a, b) => a + b.reps, 0) / lastSession.sets.length;
+              const repsOk = avgReps >= ex.repsMin && avgReps <= ex.repsMax;
+              rirUnreliableFlags.push(
+                (avgRir <= 1 && avgReps >= ex.repsMax) || // very hard but crushing reps
+                (avgRir >= 3 && avgReps < ex.repsMin)      // very easy but failing reps
+              );
+            } else {
+              rirUnreliableFlags.push(false);
+            }
+          } else {
+            rirUnreliableFlags.push(false);
+          }
+        });
+
+        const plateauAcrossGroup = plateauFlags.filter(Boolean).length / Math.max(1, plateauFlags.length) >= 0.5;
+        const rirUnreliableAcrossGroup = rirUnreliableFlags.filter(Boolean).length / Math.max(1, rirUnreliableFlags.length) >= 0.5;
+
+        const evaluation = evaluateSession(exercise, sets, [], mesoState, plateauAcrossGroup, rirUnreliableAcrossGroup);
 
         const sessionVolume = calculateVolumeLoad(sets);
-        const effectiveVolume = calculateEffectiveVolume(sets);
+        const sessionHardSets = countHardSets(sets);
 
         const session: SessionLog = {
           id: generateId(),
@@ -308,7 +351,7 @@ function useStore() {
           nextWeeklyVolumes[matchIdx] = {
             ...nextWeeklyVolumes[matchIdx],
             totalVolumeLoad: nextWeeklyVolumes[matchIdx].totalVolumeLoad + sessionVolume,
-            effectiveVolumeLoad: (nextWeeklyVolumes[matchIdx].effectiveVolumeLoad ?? 0) + effectiveVolume,
+            hardSets: nextWeeklyVolumes[matchIdx].hardSets + sessionHardSets,
             setCount: nextWeeklyVolumes[matchIdx].setCount + sets.length,
           };
         } else {
@@ -316,7 +359,7 @@ function useStore() {
             muscleGroup: exercise.muscleGroup,
             weekStartDate: mondayStr,
             totalVolumeLoad: sessionVolume,
-            effectiveVolumeLoad: effectiveVolume,
+            hardSets: sessionHardSets,
             setCount: sets.length,
           });
         }

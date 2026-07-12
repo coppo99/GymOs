@@ -32,10 +32,10 @@ const sampleState: AppState = {
     { id: 's1', exerciseId: 'e1', date: '2025-01-10', sets: [{ setNumber: 1, reps: 8, load: 60, rir: 2 }], progressionResult: 'increase', suggestedLoad: 62.5 },
   ],
   mesocycleStates: [
-    { muscleGroup: 'Petto', currentWeek: 2, mesocycleLengthWeeks: 5, phase: 'accumulation', mev: 12, mrv: 25, lastUpdated: '2025-01-17T00:00:00.000Z' },
+    { muscleGroup: 'Petto', currentWeek: 2, mesocycleLengthWeeks: 5, phase: 'accumulation', mev: 12, mrv: 25, deloadReason: null, lastUpdated: '2025-01-17T00:00:00.000Z' },
   ],
   weeklyVolumes: [
-    { muscleGroup: 'Petto', weekStartDate: '2025-01-13', totalVolumeLoad: 500, effectiveVolumeLoad: 400, setCount: 4 },
+    { muscleGroup: 'Petto', weekStartDate: '2025-01-13', totalVolumeLoad: 500, hardSets: 3, setCount: 4 },
   ],
   lastUpdated: '2025-01-17T12:00:00.000Z',
 };

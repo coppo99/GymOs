@@ -87,22 +87,23 @@ export function exportToCsv(state: AppState): string {
 
   // Mesocycle states
   lines.push(SECTION_MESO);
-  lines.push('muscleGroup,currentWeek,mesocycleLengthWeeks,phase,mev,mrv,lastUpdated');
+  lines.push('muscleGroup,currentWeek,mesocycleLengthWeeks,phase,mev,mrv,lastUpdated,deloadReason');
   for (const m of state.mesocycleStates) {
     lines.push([
       esc(m.muscleGroup), esc(m.currentWeek), esc(m.mesocycleLengthWeeks),
       esc(m.phase), esc(m.mev), esc(m.mrv), esc(m.lastUpdated),
+      esc(m.deloadReason ?? ''),
     ].join(','));
   }
   lines.push('');
 
   // Weekly volumes
   lines.push(SECTION_VOLUMES);
-  lines.push('muscleGroup,weekStartDate,totalVolumeLoad,effectiveVolumeLoad,setCount');
+  lines.push('muscleGroup,weekStartDate,totalVolumeLoad,hardSets,setCount');
   for (const v of state.weeklyVolumes) {
     lines.push([
       esc(v.muscleGroup), esc(v.weekStartDate),
-      esc(v.totalVolumeLoad), esc(v.effectiveVolumeLoad), esc(v.setCount),
+      esc(v.totalVolumeLoad), esc(v.hardSets), esc(v.setCount),
     ].join(','));
   }
   lines.push('');
@@ -167,6 +168,7 @@ export function importFromCsv(text: string): CsvImportResult {
 
   let currentSection: string | null = null;
   let headerParsed = false;
+  let foundAnySection = false;
 
   function finishSection() {
     headerParsed = false;
@@ -178,6 +180,9 @@ export function importFromCsv(text: string): CsvImportResult {
     if (line.startsWith('#')) {
       finishSection();
       currentSection = line;
+      if ([SECTION_EXERCISES, SECTION_SESSIONS, SECTION_SETS, SECTION_MESO, SECTION_VOLUMES].includes(line as any)) {
+        foundAnySection = true;
+      }
       continue;
     }
 
@@ -229,13 +234,14 @@ export function importFromCsv(text: string): CsvImportResult {
           break;
         }
         case SECTION_MESO: {
-          if (cols.length < 7) { result.errors.push(`Row ${i + 1}: expected 7 columns for mesocycle state, got ${cols.length}`); break; }
+          if (cols.length < 8) { result.errors.push(`Row ${i + 1}: expected 8 columns for mesocycle state, got ${cols.length}`); break; }
           result.mesocycleStates.push({
             muscleGroup: cols[0], currentWeek: toNum(cols[1]),
             mesocycleLengthWeeks: toNum(cols[2]),
             phase: cols[3] as MesocycleState['phase'],
             mev: toNum(cols[4]), mrv: toNum(cols[5]),
             lastUpdated: cols[6],
+            deloadReason: cols[7] ? (cols[7] as MesocycleState['deloadReason']) : null,
           });
           break;
         }
@@ -244,7 +250,7 @@ export function importFromCsv(text: string): CsvImportResult {
           result.weeklyVolumes.push({
             muscleGroup: cols[0], weekStartDate: cols[1],
             totalVolumeLoad: toNum(cols[2]),
-            effectiveVolumeLoad: toNum(cols[3]),
+            hardSets: toNum(cols[3]),
             setCount: toNum(cols[4]),
           });
           break;
@@ -256,6 +262,10 @@ export function importFromCsv(text: string): CsvImportResult {
     } catch (e) {
       result.errors.push(`Row ${i + 1}: ${(e as Error).message}`);
     }
+  }
+
+  if (!foundAnySection && result.exercises.length === 0 && result.sessions.length === 0 && result.mesocycleStates.length === 0 && result.weeklyVolumes.length === 0 && result.errors.length === 0) {
+    result.errors.push('Nessun dato valido trovato nel file CSV.');
   }
 
   return result;
