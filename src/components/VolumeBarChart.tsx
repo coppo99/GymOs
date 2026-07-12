@@ -8,7 +8,7 @@ export default function VolumeBarChart({ weeklyTrend, mev, mrv }: VolumeBarChart
   const maxHardSets = Math.max(...weeklyTrend.map(w => w.hardSets), 0) || 1;
 
   return (
-    <div style={{ marginTop: 'var(--space-3)', background: 'var(--bg-elevated)', borderRadius: 'var(--radius)', padding: 'var(--space-3)' }}>
+    <div style={{ marginTop: 'var(--space-3)', background: 'var(--bg-elevated)', borderRadius: 'var(--radius)', padding: 'var(--space-3)', overflow: 'hidden' }}>
       <div style={{ fontSize: '10px', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '6px' }}>
         Hard Sets Ultimi 30 Giorni
       </div>

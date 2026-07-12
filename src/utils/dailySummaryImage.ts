@@ -1,18 +1,18 @@
 import type { SessionLog, Exercise } from '../types';
-import { calculateVolumeLoad } from '../engine/progression';
+import { countHardSets } from '../engine/progression';
 import { todayIso } from './storage';
 
 export interface DailyGroupSummary {
   muscleGroup: string;
-  exercises: { name: string; setsCount: number; volume: number }[];
-  totalVolume: number;
+  exercises: { name: string; setsCount: number; hardSets: number }[];
+  totalHardSets: number;
   totalSets: number;
 }
 
 export function buildDailySummary(
   sessions: SessionLog[],
   exercises: Exercise[]
-): { groups: DailyGroupSummary[]; totalVolume: number; totalSets: number } {
+): { groups: DailyGroupSummary[]; totalHardSets: number; totalSets: number } {
   const today = todayIso();
   const todaySessions = sessions.filter((s) => s.date === today);
 
@@ -23,26 +23,26 @@ export function buildDailySummary(
     if (!ex) continue;
 
     if (!groupMap.has(ex.muscleGroup)) {
-      groupMap.set(ex.muscleGroup, { muscleGroup: ex.muscleGroup, exercises: [], totalVolume: 0, totalSets: 0 });
+      groupMap.set(ex.muscleGroup, { muscleGroup: ex.muscleGroup, exercises: [], totalHardSets: 0, totalSets: 0 });
     }
     const g = groupMap.get(ex.muscleGroup)!;
-    const vol = calculateVolumeLoad(s.sets);
-    g.exercises.push({ name: ex.name, setsCount: s.sets.length, volume: vol });
-    g.totalVolume += vol;
+    const hs = countHardSets(s.sets);
+    g.exercises.push({ name: ex.name, setsCount: s.sets.length, hardSets: hs });
+    g.totalHardSets += hs;
     g.totalSets += s.sets.length;
   }
 
   const groups = Array.from(groupMap.values());
-  const totalVolume = groups.reduce((a, g) => a + g.totalVolume, 0);
+  const totalHardSets = groups.reduce((a, g) => a + g.totalHardSets, 0);
   const totalSets = groups.reduce((a, g) => a + g.totalSets, 0);
 
-  return { groups, totalVolume, totalSets };
+  return { groups, totalHardSets, totalSets };
 }
 
 export function drawDailySummaryToBlob(
   dateStr: string,
   groups: DailyGroupSummary[],
-  totalVolume: number,
+  totalHardSets: number,
   totalSets: number
 ): Promise<Blob | null> {
   const W = 1080;
@@ -109,7 +109,7 @@ export function drawDailySummaryToBlob(
     ctx.fillStyle = '#9898b8';
     ctx.font = '22px Inter, sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(`${g.totalVolume.toFixed(0)} kg\u00B7reps \u00B7 ${g.totalSets} serie`, W - pad - 16, y + 36);
+    ctx.fillText(`${g.totalHardSets} hard sets \u00B7 ${g.totalSets} serie`, W - pad - 16, y + 36);
 
     y += groupHeaderH;
 
@@ -126,7 +126,7 @@ export function drawDailySummaryToBlob(
 
       ctx.fillStyle = '#9898b8';
       ctx.textAlign = 'right';
-      ctx.fillText(`${ex.setsCount} serie \u00B7 ${ex.volume.toFixed(0)} kg\u00B7reps`, W - pad - 24, y + 32);
+      ctx.fillText(`${ex.setsCount} serie \u00B7 ${ex.hardSets} hard sets`, W - pad - 24, y + 32);
 
       y += exRowH;
     }
@@ -144,7 +144,7 @@ export function drawDailySummaryToBlob(
   ctx.fillText('Totale', pad + 16, totalY + 40);
 
   ctx.textAlign = 'right';
-  ctx.fillText(`${totalVolume.toFixed(0)} kg\u00B7reps \u00B7 ${totalSets} serie`, W - pad - 16, totalY + 40);
+  ctx.fillText(`${totalHardSets} hard sets \u00B7 ${totalSets} serie`, W - pad - 16, totalY + 40);
 
   const footY = Math.max(H - footerH, totalY + 100);
   ctx.fillStyle = '#5a5a78';

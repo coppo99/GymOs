@@ -142,11 +142,11 @@ export default function Dashboard({
         dateStr.charAt(0).toUpperCase() + dateStr.slice(1),
         '',
         ...summary.groups.flatMap((g) => [
-          `${g.muscleGroup}: ${g.totalVolume.toFixed(0)} kg·reps (${g.totalSets} serie)`,
-          ...g.exercises.map((ex) => `  • ${ex.name}: ${ex.setsCount} serie, ${ex.volume.toFixed(0)} kg·reps`),
+          `${g.muscleGroup}: ${g.totalHardSets} hard sets (${g.totalSets} serie)`,
+          ...g.exercises.map((ex) => `  • ${ex.name}: ${ex.setsCount} serie, ${ex.hardSets} hard sets`),
         ]),
         '',
-        `Totale: ${summary.totalVolume.toFixed(0)} kg·reps · ${summary.totalSets} serie`,
+        `Totale: ${summary.totalHardSets} hard sets · ${summary.totalSets} serie`,
         '#GymOS',
       ].join('\n');
 
@@ -167,7 +167,7 @@ export default function Dashboard({
       }
     };
 
-    drawDailySummaryToBlob(dateStr, summary.groups, summary.totalVolume, summary.totalSets).then(doShare);
+    drawDailySummaryToBlob(dateStr, summary.groups, summary.totalHardSets, summary.totalSets).then(doShare);
   }
 
   const sortedExercises = [...exercises].sort((a, b) => a.order - b.order);
@@ -511,13 +511,13 @@ export default function Dashboard({
                 <div key={g.muscleGroup} style={{ marginBottom: 'var(--space-4)' }}>
                   <div className="flex justify-between items-center" style={{ marginBottom: 'var(--space-2)' }}>
                     <span className="fw-bold fs-sm" style={{ color: 'var(--accent)' }}>{g.muscleGroup}</span>
-                    <span className="text-secondary fs-xs">{g.totalVolume.toFixed(0)} kg·reps · {g.totalSets} serie</span>
+                    <span className="text-secondary fs-xs">{g.totalHardSets} hard sets · {g.totalSets} serie</span>
                   </div>
                   <div style={{ background: 'var(--bg-elevated)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
                     {g.exercises.map((ex, i) => (
                       <div key={i} className="flex justify-between items-center" style={{ padding: '8px var(--space-3)', borderBottom: i < g.exercises.length - 1 ? '1px solid var(--border)' : 'none' }}>
                         <span className="fs-sm">{ex.name}</span>
-                        <span className="text-muted fs-xs">{ex.setsCount} serie · {ex.volume.toFixed(0)} kg·reps</span>
+                        <span className="text-muted fs-xs">{ex.setsCount} serie · {ex.hardSets} hard sets</span>
                       </div>
                     ))}
                   </div>
@@ -525,7 +525,7 @@ export default function Dashboard({
               ))}
               <div className="flex justify-between items-center" style={{ borderTop: '1px solid var(--border)', paddingTop: 'var(--space-3)', marginBottom: 'var(--space-4)' }}>
                 <span className="fw-bold fs-md">Totale</span>
-                <span className="fw-bold fs-md text-accent">{summary.totalVolume.toFixed(0)} kg·reps · {summary.totalSets} serie</span>
+                <span className="fw-bold fs-md text-accent">{summary.totalHardSets} hard sets · {summary.totalSets} serie</span>
               </div>
               <button className="btn btn-primary btn-full" onClick={() => handleShareDaily(summary, dateStr)}>
                 Condividi Riepilogo

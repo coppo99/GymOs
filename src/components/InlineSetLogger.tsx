@@ -8,6 +8,7 @@ import {
   adjustLoadForNextSet,
   evaluateSession,
   calculateVolumeLoad,
+  countHardSets,
   getProgressionColor,
   getProgressionLabel,
 } from '../engine/progression';
@@ -50,13 +51,13 @@ export default function InlineSetLogger({
 
   const [showCelebration, setShowCelebration] = useState(false);
   const [celebrationData, setCelebrationData] = useState<{
-    todayVolume: number;
-    prevVolume: number;
-    volDeltaPct: number;
+    todayHardSets: number;
+    prevHardSets: number;
+    hardSetsDeltaPct: number;
     todayMaxLoad: number;
     prevMaxLoad: number;
     isLoadPR: boolean;
-    isVolumePR: boolean;
+    isHardSetsPR: boolean;
   } | null>(null);
 
   const repsRef = useRef<HTMLInputElement>(null);
@@ -118,35 +119,35 @@ export default function InlineSetLogger({
   }
 
   function handleConfirmSave() {
-    const todayVolume = calculateVolumeLoad(loggedSets);
+    const todayHardSets = countHardSets(loggedSets);
     const todayMaxLoad = Math.max(...loggedSets.map(s => s.load));
 
-    let prevVolume = 0;
+    let prevHardSets = 0;
     let prevMaxLoad = 0;
-    let maxHistoricalVolume = 0;
+    let maxHistoricalHardSets = 0;
     let maxHistoricalLoad = 0;
 
     if (recentSessions.length > 0) {
       const prevSession = recentSessions[0];
-      prevVolume = calculateVolumeLoad(prevSession.sets);
+      prevHardSets = countHardSets(prevSession.sets);
       prevMaxLoad = Math.max(...prevSession.sets.map(s => s.load));
 
-      maxHistoricalVolume = Math.max(...recentSessions.map(s => calculateVolumeLoad(s.sets)));
+      maxHistoricalHardSets = Math.max(...recentSessions.map(s => countHardSets(s.sets)));
       maxHistoricalLoad = Math.max(...recentSessions.flatMap(s => s.sets.map(x => x.load)));
     }
 
-    const volDeltaPct = prevVolume > 0 ? ((todayVolume - prevVolume) / prevVolume) * 100 : 0;
+    const hardSetsDeltaPct = prevHardSets > 0 ? ((todayHardSets - prevHardSets) / prevHardSets) * 100 : 0;
     const isLoadPR = recentSessions.length > 0 && todayMaxLoad > maxHistoricalLoad;
-    const isVolumePR = recentSessions.length > 0 && todayVolume > maxHistoricalVolume;
+    const isHardSetsPR = recentSessions.length > 0 && todayHardSets > maxHistoricalHardSets;
 
     setCelebrationData({
-      todayVolume,
-      prevVolume,
-      volDeltaPct,
+      todayHardSets,
+      prevHardSets,
+      hardSetsDeltaPct,
       todayMaxLoad,
       prevMaxLoad,
       isLoadPR,
-      isVolumePR,
+      isHardSetsPR,
     });
 
     onSaveSession(loggedSets);
@@ -165,14 +166,14 @@ export default function InlineSetLogger({
       `\u{1F3CB}\uFE0F ${exercise.name} \u2014 ${dateStr}`,
       '',
       `\u{1F4CA} ${loggedSets.length} serie: ${setsSummary}`,
-      `\u{1F4C8} Volume: ${celebrationData?.todayVolume.toFixed(0) ?? calculateVolumeLoad(loggedSets).toFixed(0)} kg\u00B7reps`,
+      `\u{1F4AA} Hard Sets: ${celebrationData?.todayHardSets ?? countHardSets(loggedSets)}`,
     ];
 
     if (evaluationResult) {
       lines.push(`\u{1F3AF} Prossimo: ${getProgressionLabel(evaluationResult.result)} a ${evaluationResult.suggestedLoad} kg`);
     }
     if (celebrationData?.isLoadPR) lines.push('\u{1F3C6} NUOVO RECORD CARICO!');
-    if (celebrationData?.isVolumePR) lines.push('\u{1F525} NUOVO RECORD VOLUME!');
+    if (celebrationData?.isHardSetsPR) lines.push('\u{1F525} NUOVO RECORD HARD SETS!');
 
     lines.push('', '#GymOS');
 
@@ -206,12 +207,12 @@ export default function InlineSetLogger({
 
   if (showCelebration && celebrationData) {
     const {
-      todayVolume,
-      volDeltaPct,
+      todayHardSets,
+      hardSetsDeltaPct,
       todayMaxLoad,
       prevMaxLoad,
       isLoadPR,
-      isVolumePR,
+      isHardSetsPR,
     } = celebrationData;
 
     return (
@@ -224,16 +225,16 @@ export default function InlineSetLogger({
           Ottimo lavoro su {exercise.name}. Ecco i risultati di oggi:
         </p>
 
-        {(isLoadPR || isVolumePR) && (
+        {(isLoadPR || isHardSetsPR) && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
             {isLoadPR && (
               <div className="badge badge-success" style={{ padding: '6px', fontSize: '11px', justifyContent: 'center' }}>
                 {'\u{1F3C6}'} NUOVO RECORD DI CARICO: {todayMaxLoad} kg!
               </div>
             )}
-            {isVolumePR && (
+            {isHardSetsPR && (
               <div className="badge badge-accent" style={{ padding: '6px', fontSize: '11px', justifyContent: 'center' }}>
-                {'\u{1F525}'} NUOVO RECORD DI VOLUME: {todayVolume.toFixed(0)} kg*reps!
+                {'\u{1F525}'} NUOVO RECORD HARD SETS: {todayHardSets}!
               </div>
             )}
           </div>
@@ -241,13 +242,13 @@ export default function InlineSetLogger({
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)', marginBottom: 'var(--space-5)', textAlign: 'left' }}>
           <div style={{ background: 'var(--bg-card)', padding: 'var(--space-3)', borderRadius: 'var(--radius-sm)' }}>
-            <span className="text-muted" style={{ fontSize: '10px', textTransform: 'uppercase' }}>Volume Totale</span>
+            <span className="text-muted" style={{ fontSize: '10px', textTransform: 'uppercase' }}>Hard Sets</span>
             <div className="fw-bold fs-md" style={{ color: 'var(--accent)', marginTop: '2px' }}>
-              {todayVolume.toFixed(0)} <span style={{ fontSize: '10px', color: 'var(--text-muted)' }}>kg*reps</span>
+              {todayHardSets}
             </div>
-            {celebrationData.prevVolume > 0 && (
-              <span className={`fw-600 fs-xs ${volDeltaPct >= 0 ? 'text-success' : 'text-danger'}`} style={{ display: 'block', marginTop: '4px' }}>
-                {volDeltaPct >= 0 ? '\u25B2' : '\u25BC'} {Math.abs(volDeltaPct).toFixed(1)}% rispetto a prima
+            {celebrationData.prevHardSets > 0 && (
+              <span className={`fw-600 fs-xs ${hardSetsDeltaPct >= 0 ? 'text-success' : 'text-danger'}`} style={{ display: 'block', marginTop: '4px' }}>
+                {hardSetsDeltaPct >= 0 ? '\u25B2' : '\u25BC'} {Math.abs(hardSetsDeltaPct).toFixed(1)}% rispetto a prima
               </span>
             )}
           </div>
