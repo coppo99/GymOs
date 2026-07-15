@@ -703,56 +703,70 @@ describe('getDeloadTargetSets', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('adjustLoadForNextSet', () => {
-  // ── |diff| = 2 → 5% adjustment (symmetric) ────────────────────────────
+  // ── |diff| = 2 → 2.5% reduction / 1.5% increase (asymmetric) ────────────
 
-  it('returns 5% reduction when RIR=0 and target=2 (|diff|=2 below)', () => {
+  it('returns 2.5% reduction when RIR=0 and target=2 (|diff|=2 below)', () => {
     const result = adjustLoadForNextSet(100, 0, 2, 2.5);
-    expect(result.suggestedLoad).toBe(95); // 100 * 0.95
+    expect(result.suggestedLoad).toBe(97.5); // 100 * 0.975
     expect(result.feedback).toContain('ridotto');
   });
 
-  it('returns 5% reduction when RIR=1 and target=3 (|diff|=2 below)', () => {
+  it('returns 2.5% reduction when RIR=1 and target=3 (|diff|=2 below)', () => {
     const result = adjustLoadForNextSet(100, 1, 3, 2.5);
-    expect(result.suggestedLoad).toBe(95); // 100 * 0.95
+    expect(result.suggestedLoad).toBe(97.5); // 100 * 0.975
     expect(result.feedback).toContain('ridotto');
   });
 
-  it('returns 5% increase when RIR=4 and target=2 (|diff|=2 above)', () => {
+  it('returns 1.5% increase when RIR=4 and target=2 (|diff|=2 above)', () => {
     const result = adjustLoadForNextSet(100, 4, 2, 2.5);
-    expect(result.suggestedLoad).toBe(105); // 100 * 1.05
+    expect(result.suggestedLoad).toBe(102.5); // 100 * 1.015 rounded
     expect(result.feedback).toContain('aumentato');
   });
 
-  it('symmetric: same |diff|=2 gives same magnitude both directions', () => {
-    // diff=-2 (RIR=0 target=2) → 5% reduction
+  it('asymmetric: |diff|=2 gives different magnitude for up vs down', () => {
+    // diff=-2 (RIR=0 target=2) → 2.5% reduction
     const below = adjustLoadForNextSet(100, 0, 2, 1);
-    expect(below.suggestedLoad).toBe(95);
-    // diff=+2 (RIR=4 target=2) → 5% increase
+    expect(below.suggestedLoad).toBe(98); // 100 * 0.975 = 97.5, round(97.5) = 98
+    // diff=+2 (RIR=4 target=2) → 1.5% increase
     const above = adjustLoadForNextSet(100, 4, 2, 1);
-    expect(above.suggestedLoad).toBe(105);
+    expect(above.suggestedLoad).toBe(101); // 100 * 1.015 = 101.5, roundToIncrement(101.5, 1) = round(101.5) → 101 (IEEE 754)
   });
 
-  // ── |diff| >= 3 → 10% adjustment (symmetric) ──────────────────────────
+  // ── |diff| = 3 → 5% reduction / 3% increase (asymmetric) ─────────────────
 
-  it('returns 10% reduction when RIR=0 and target=3 (|diff|=3 below)', () => {
+  it('returns 5% reduction when RIR=0 and target=3 (|diff|=3 below)', () => {
     const result = adjustLoadForNextSet(100, 0, 3, 2.5);
+    expect(result.suggestedLoad).toBe(95); // 100 * 0.95
+    expect(result.feedback).toContain('ridotto');
+  });
+
+  it('returns 3% increase when RIR=5 and target=2 (|diff|=3 above)', () => {
+    const result = adjustLoadForNextSet(100, 5, 2, 2.5);
+    expect(result.suggestedLoad).toBe(102.5); // 100 * 1.03 = 103, roundToIncrement(103, 2.5) = 102.5
+    expect(result.feedback).toContain('aumentato');
+  });
+
+  it('asymmetric: |diff|=3 gives different magnitude for up vs down', () => {
+    // diff=-3 (RIR=0 target=3) → 5% reduction
+    const below = adjustLoadForNextSet(100, 0, 3, 1);
+    expect(below.suggestedLoad).toBe(95);  // 100 * 0.95
+    // diff=+3 (RIR=5 target=2) → 3% increase
+    const above = adjustLoadForNextSet(100, 5, 2, 1);
+    expect(above.suggestedLoad).toBe(103); // 100 * 1.03
+  });
+
+  // ── |diff| = 4+ → 10% reduction / 5% increase (asymmetric, extreme) ─────
+
+  it('returns 10% reduction when |diff|>=4 below', () => {
+    const result = adjustLoadForNextSet(100, 0, 4, 2.5);
     expect(result.suggestedLoad).toBe(90); // 100 * 0.9
     expect(result.feedback).toContain('ridotto');
   });
 
-  it('returns 10% increase when RIR=5 and target=2 (|diff|=3 above)', () => {
-    const result = adjustLoadForNextSet(100, 5, 2, 2.5);
-    expect(result.suggestedLoad).toBe(110); // 100 * 1.1
+  it('returns 5% increase when |diff|>=4 above', () => {
+    const result = adjustLoadForNextSet(100, 6, 2, 2.5);
+    expect(result.suggestedLoad).toBe(105); // 100 * 1.05
     expect(result.feedback).toContain('aumentato');
-  });
-
-  it('symmetric: same |diff|=3 gives same magnitude both directions', () => {
-    // diff=-3 (RIR=0 target=3) → 10% reduction
-    const below = adjustLoadForNextSet(100, 0, 3, 1);
-    expect(below.suggestedLoad).toBe(90);
-    // diff=+3 (RIR=5 target=2) → 10% increase
-    const above = adjustLoadForNextSet(100, 5, 2, 1);
-    expect(above.suggestedLoad).toBe(110);
   });
 
   // ── |diff| <= 1 → no change ────────────────────────────────────────────
@@ -775,10 +789,10 @@ describe('adjustLoadForNextSet', () => {
     expect(result.suggestedLoad).toBeGreaterThanOrEqual(2.5);
   });
 
-  it('rounds to nearest increment with 10% adjustment', () => {
+  it('rounds to nearest increment with |diff|=3 reduction', () => {
     const result = adjustLoadForNextSet(60, 5, 2, 2.5);
-    // |diff|=3 → 10% increase → 60 * 1.1 = 66; roundToIncrement(66, 2.5) = 65
-    expect(result.suggestedLoad).toBe(65);
+    // |diff|=3 → 3% increase → 60 * 1.03 = 61.8; roundToIncrement(61.8, 2.5) = 62.5
+    expect(result.suggestedLoad).toBe(62.5);
   });
 });
 

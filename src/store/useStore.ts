@@ -9,7 +9,8 @@ import type {
   WeeklyVolumeLog,
 } from '../types';
 import { loadState, saveState, generateId, todayIso } from '../utils/storage';
-import { evaluateSession, calculateVolumeLoad, countHardSets, DEFAULT_MEV, DEFAULT_MRV, isHardSet } from '../engine/progression';
+import { evaluateSession } from '../engine/decision';
+import { calculateVolumeLoad, countHardSets, DEFAULT_MEV, DEFAULT_MRV, isHardSet } from '../engine/progression';
 import type { CsvImportResult } from '../utils/csv';
 
 // ─── Constants ────────────────────────────────────────────────────────────────

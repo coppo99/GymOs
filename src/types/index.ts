@@ -2,7 +2,7 @@
 
 export type ProgressionResult = 'increase' | 'maintain' | 'deload';
 
-export type DeloadReason = 'scheduled' | 'plateau' | 'rir_unreliable';
+export type DeloadReason = 'scheduled' | 'plateau' | 'rir_unreliable' | 'autoregulated';
 
 export interface Exercise {
   id: string;
@@ -72,7 +72,8 @@ export interface ProgressionEvaluation {
   result: ProgressionResult;
   suggestedLoad: number;
   reason: string;
-  deloadReason?: DeloadReason;       // present only when result === 'deload'
+  deloadReason?: DeloadReason;
+  breakdown?: ProgressScoreBreakdown;
 }
 
 // ─── UI Types ─────────────────────────────────────────────────────────────────
@@ -96,4 +97,46 @@ export interface ExerciseFormData {
   currentLoad: number;
   loadIncrement: number;
   rirTarget: number | null;
+}
+
+// ─── Progression Engine v2 Types ──────────────────────────────────────────────
+
+export interface EstimatedE1RM {
+  value: number;
+  confidence: 'high' | 'low';
+  effectiveReps: number;
+}
+
+export interface E1RMTrend {
+  slope: number;
+  direction: 'up' | 'flat' | 'down';
+  sampleConfidence: 'high' | 'low';
+}
+
+export interface VolumeThresholds {
+  mev: number;
+  mrv: number;
+  source: 'default' | 'rp_framework_approximate' | 'generic_fallback';
+}
+
+export interface ProgressScoreConfig {
+  increaseThreshold: number;
+  reduceThreshold: number;
+  deloadThreshold: number;
+}
+
+export interface ProgressScoreBreakdown {
+  performanceComponent: number;
+  trendComponent: number;
+  rirComponent: number;
+  fatigueComponent: number;
+  total: number;
+  decision: 'increase' | 'maintain' | 'reduce_volume' | 'deload';
+  threshold: ProgressScoreConfig;
+  explanation: string[];
+}
+
+export interface PlateauAssessment {
+  isPlateau: boolean;
+  reasons: string[];
 }

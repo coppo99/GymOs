@@ -12,6 +12,7 @@ import {
   getProgressionColor,
   getProgressionLabel,
 } from '../engine/progression';
+import ProgressScoreCard from './ProgressScoreCard';
 
 export interface InlineLoggerProps {
   exercise: Exercise;
@@ -267,14 +268,21 @@ export default function InlineSetLogger({
         </div>
 
         {evaluationResult && (
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: 'var(--space-3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', marginBottom: 'var(--space-4)', fontSize: 'var(--fs-xs)', textAlign: 'left' }}>
-            <div className="fw-600" style={{ color: 'var(--text-primary)', marginBottom: '2px' }}>
-              Prossimo allenamento consigliato:
+          <div style={{ marginBottom: 'var(--space-4)' }}>
+            <div style={{ background: 'rgba(255,255,255,0.02)', padding: 'var(--space-3)', borderRadius: 'var(--radius)', border: '1px solid var(--border)', fontSize: 'var(--fs-xs)', textAlign: 'left' }}>
+              <div className="fw-600" style={{ color: 'var(--text-primary)', marginBottom: '2px' }}>
+                Prossimo allenamento consigliato:
+              </div>
+              <span className={`badge badge-${getProgressionColor(evaluationResult.result)}`} style={{ fontSize: '10px', marginRight: '6px' }}>
+                {getProgressionLabel(evaluationResult.result)}
+              </span>
+              <strong className="text-accent">{evaluationResult.suggestedLoad} kg</strong>
             </div>
-            <span className={`badge badge-${getProgressionColor(evaluationResult.result)}`} style={{ fontSize: '10px', marginRight: '6px' }}>
-              {getProgressionLabel(evaluationResult.result)}
-            </span>
-            <strong className="text-accent">{evaluationResult.suggestedLoad} kg</strong>
+            {evaluationResult.breakdown && (
+              <div style={{ marginTop: 'var(--space-2)' }}>
+                <ProgressScoreCard breakdown={evaluationResult.breakdown} suggestedLoad={evaluationResult.suggestedLoad} />
+              </div>
+            )}
           </div>
         )}
 
@@ -472,6 +480,11 @@ export default function InlineSetLogger({
             <strong>{getProgressionLabel(evaluationResult.result)}: {evaluationResult.suggestedLoad} kg</strong>
             <div className="text-secondary" style={{ marginTop: '2px', fontSize: '10px' }}>{evaluationResult.reason}</div>
           </div>
+          {evaluationResult.breakdown && (
+            <div style={{ marginTop: 'var(--space-2)' }}>
+              <ProgressScoreCard breakdown={evaluationResult.breakdown} suggestedLoad={evaluationResult.suggestedLoad} />
+            </div>
+          )}
         </div>
       )}
 

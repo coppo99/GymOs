@@ -26,6 +26,8 @@ import InlineSetLogger from './InlineSetLogger';
 import { exportToCsv, downloadCsv, importFromCsv } from '../utils/csv';
 import type { CsvImportResult } from '../utils/csv';
 import { buildDailySummary, drawDailySummaryToBlob } from '../utils/dailySummaryImage';
+import { evaluateSession } from '../engine/decision';
+import ProgressScoreCard from './ProgressScoreCard';
 
 interface Props {
   exercises: Exercise[];
@@ -457,27 +459,38 @@ export default function Dashboard({
 
                     {/* Quick stats (only if not logging) */}
                     {!isLogging && last && (
-                      <div style={{ marginTop: 'var(--space-3)', display: 'flex', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
-                        <div>
-                          <div className="fs-xs text-muted">Ultima seduta</div>
-                          <div className="fw-600 fs-sm">{last.sets.length} serie</div>
-                        </div>
-                        <div>
-                          <div className="fs-xs text-muted">Carico usato</div>
-                          <div className="fw-600 fs-sm">{last.sets[0]?.load ?? '—'} kg</div>
-                        </div>
-                        <div>
-                          <div className="fs-xs text-muted">Prossima seduta</div>
-                          <div className="fw-600 fs-sm text-accent">{last.suggestedLoad} kg</div>
-                        </div>
-                        {ex.rirTarget !== null && last.sets.some(s => s.rir !== null) && (
+                      <div style={{ marginTop: 'var(--space-3)' }}>
+                        <div style={{ display: 'flex', gap: 'var(--space-4)', flexWrap: 'wrap' }}>
                           <div>
-                            <div className="fs-xs text-muted">RIR medio</div>
-                            <div className="fw-600 fs-sm">
-                              {(last.sets.filter(s => s.rir !== null).reduce((a, s) => a + (s.rir ?? 0), 0) / last.sets.filter(s => s.rir !== null).length).toFixed(1)}
-                            </div>
+                            <div className="fs-xs text-muted">Ultima seduta</div>
+                            <div className="fw-600 fs-sm">{last.sets.length} serie</div>
                           </div>
-                        )}
+                          <div>
+                            <div className="fs-xs text-muted">Carico usato</div>
+                            <div className="fw-600 fs-sm">{last.sets[0]?.load ?? '—'} kg</div>
+                          </div>
+                          <div>
+                            <div className="fs-xs text-muted">Prossima seduta</div>
+                            <div className="fw-600 fs-sm text-accent">{last.suggestedLoad} kg</div>
+                          </div>
+                          {ex.rirTarget !== null && last.sets.some(s => s.rir !== null) && (
+                            <div>
+                              <div className="fs-xs text-muted">RIR medio</div>
+                              <div className="fw-600 fs-sm">
+                                {(last.sets.filter(s => s.rir !== null).reduce((a, s) => a + (s.rir ?? 0), 0) / last.sets.filter(s => s.rir !== null).length).toFixed(1)}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        <div style={{ marginTop: 'var(--space-2)' }}>
+                          {(() => {
+                            const evalResult = evaluateSession(ex, last.sets, getSessionsForExercise(ex.id), getMesocycleState(ex.muscleGroup));
+                            if (evalResult.breakdown) {
+                              return <ProgressScoreCard breakdown={evalResult.breakdown} suggestedLoad={evalResult.suggestedLoad} />;
+                            }
+                            return null;
+                          })()}
+                        </div>
                       </div>
                     )}
                   </div>

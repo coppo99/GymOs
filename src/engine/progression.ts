@@ -7,6 +7,7 @@ import type {
   MesocycleState,
   DeloadReason,
 } from '../types';
+import { detectRirInconsistency, detectGroupDecline } from './metrics';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -410,39 +411,13 @@ export function checkEarlyOverloadWarning(
   sessions: SessionLog[],
   muscleGroup: string
 ): { warning: boolean; message: string } {
-  const groupExercises = exercises.filter(
-    (ex) => ex.muscleGroup.toLowerCase() === muscleGroup.toLowerCase()
-  );
-
-  if (groupExercises.length < 2) {
-    return { warning: false, message: '' };
-  }
-
-  let decliningCount = 0;
-
-  groupExercises.forEach((ex) => {
-    const exSessions = sessions
-      .filter((s) => s.exerciseId === ex.id)
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .slice(-4);
-
-    if (exSessions.length >= 3) {
-      const loads = exSessions.map((s) => s.suggestedLoad);
-      const slope = calculateSlope(loads);
-      if (slope < -0.1) {
-        decliningCount++;
-      }
-    }
-  });
-
-  // If more than 50% of exercises in the group are declining in load, warn the user.
-  if (decliningCount >= Math.ceil(groupExercises.length / 2)) {
+  const result = detectGroupDecline(exercises, sessions, muscleGroup);
+  if (result.declining) {
     return {
       warning: true,
       message: `Attenzione: diversi esercizi per ${muscleGroup} registrano cali consecutivi dei carichi. Valuta se il volume è eccessivo o anticipa la settimana di deload.`,
     };
   }
-
   return { warning: false, message: '' };
 }
 
@@ -458,7 +433,7 @@ export function checkRirReliability(
   const exSessions = sessions
     .filter((s) => s.exerciseId === exercise.id)
     .sort((a, b) => a.date.localeCompare(b.date))
-    .slice(-5); // last 5 sessions (around 4 weeks if trained weekly)
+    .slice(-5);
 
   if (exSessions.length < 4) return false;
 
@@ -468,12 +443,10 @@ export function checkRirReliability(
 
   if (rirVals.length === 0) return false;
 
-  const averageRir = avg(rirVals);
+  const averageRir = rirVals.reduce((a, b) => a + b, 0) / rirVals.length;
   const loads = exSessions.map((s) => s.suggestedLoad);
   const slope = calculateSlope(loads);
 
-  // If user says RIR is high (session is easy, plenty of reps in reserve)
-  // but load slope is flat or negative, they are likely overestimating RIR.
   return averageRir >= 3 && slope <= 0.05;
 }
 
@@ -558,13 +531,16 @@ export function getDeloadTargetSets(normalTargetSets: number): number {
 
 /**
  * Adjusts the load for the next set within the same session
- * based on the absolute RIR deviation (|diff|) from target.
+ * based on the RIR deviation from target.
  *
- * - |diff| >= 3 → adjust by ±10%
- * - |diff| = 2  → adjust by ±5%
- * - |diff| <= 1 → no change
- * - Adjustment is symmetric: same |diff| gives same magnitude
- * - Output is always ≥ loadIncrement
+ * Asymmetric: the cost of overshooting (too heavy, RIR too low) is greater
+ * than the cost of undershooting (too light, RIR too high), so reductions
+ * are more aggressive than increases.
+ *
+ * - |diff| >= 4 (extreme):  −10% se duro, +5% se facile
+ * - |diff| = 3:              −5% se duro, +3% se facile
+ * - |diff| = 2:              −2.5% se duro, +1.5% se facile
+ * - |diff| <= 1:             invariato
  */
 export function adjustLoadForNextSet(
   lastSetLoad: number,
@@ -575,31 +551,30 @@ export function adjustLoadForNextSet(
   const diff = actualRir - rirTarget;
   const absDiff = Math.abs(diff);
 
-  if (absDiff >= 3) {
-    const factor = diff > 0 ? 1.10 : 0.90;
-    const suggestedLoad = Math.max(
-      roundToIncrement(lastSetLoad * factor, loadIncrement),
-      loadIncrement
-    );
-    const direction = diff > 0 ? 'aumentato' : 'ridotto';
-    return {
-      suggestedLoad,
-      feedback: `RIR ${actualRir} vs target ${rirTarget}. Carico serie succ. ${direction} a ${suggestedLoad} kg.`,
-    };
+  let factor: number;
+  if (absDiff >= 4) {
+    factor = diff > 0 ? 1.05 : 0.90;
+  } else if (absDiff === 3) {
+    factor = diff > 0 ? 1.03 : 0.95;
+  } else if (absDiff === 2) {
+    factor = diff > 0 ? 1.015 : 0.975;
+  } else {
+    factor = 1;
   }
-  if (absDiff === 2) {
-    const factor = diff > 0 ? 1.05 : 0.95;
-    const suggestedLoad = Math.max(
-      roundToIncrement(lastSetLoad * factor, loadIncrement),
-      loadIncrement
-    );
-    const direction = diff > 0 ? 'aumentato' : 'ridotto';
-    return {
-      suggestedLoad,
-      feedback: `RIR ${actualRir} vs target ${rirTarget}. Carico serie succ. ${direction} a ${suggestedLoad} kg.`,
-    };
+
+  if (factor === 1) {
+    return { suggestedLoad: lastSetLoad, feedback: null };
   }
-  return { suggestedLoad: lastSetLoad, feedback: null };
+
+  const suggestedLoad = Math.max(
+    roundToIncrement(lastSetLoad * factor, loadIncrement),
+    loadIncrement
+  );
+  const direction = diff > 0 ? 'aumentato' : 'ridotto';
+  return {
+    suggestedLoad,
+    feedback: `RIR ${actualRir} vs target ${rirTarget}. Carico serie succ. ${direction} a ${suggestedLoad} kg.`,
+  };
 }
 
 // ─── Set Validation ──────────────────────────────────────────────────────────
